@@ -1,0 +1,30 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+.hvigor/
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+# ── 小记（Xiaoji）追加 ─────────────────────────────────────
+# 签名材料：私钥 / 证书 / profile / 解密材料 —— 绝不能入库
+# （丢了发布私钥，已上架的 App 就再也发不了更新）
+/sign/
+/tools/signing/
+*.p12
+*.p7b
+*.csr
+*.cer
+*.keystore
+
+# build-profile.json5 里是本机绝对路径 + 加密后的口令，
+# 入库的是脱敏模板 build-profile.json5.example
+/build-profile.json5
+
+# macOS
+.DS_Store
+**/.DS_Store

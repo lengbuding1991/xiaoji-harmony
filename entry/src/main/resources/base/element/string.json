@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "小记：把每天的事放在一个地方，纯本地存储，不联网"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "任务、日程、灵感、习惯、复盘，全部离线存在你自己的手机上"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "小记"
+    }
+  ]
+}

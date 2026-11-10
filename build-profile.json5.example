@@ -1,0 +1,47 @@
+{
+  "app": {
+    // 签名配置：本机相关（绝对路径 + 加密口令），不入库。
+  // 用法：把本文件复制成 build-profile.json5，然后二选一：
+  //   A) DevEco Studio → File → Project Structure → Signing Configs，勾「自动生成签名」，保存即可；
+  //   B) 手动填 material（storeFile / storePassword / keyAlias / keyPassword / profile / certpath），
+  //      口令必须是 hvigor 的加密 hex，不能写明文，否则报 00303116。
+  "signingConfigs": [],
+  "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "6.1.1(24)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug",
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}
