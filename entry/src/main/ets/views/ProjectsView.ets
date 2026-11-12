@@ -39,6 +39,37 @@ export struct ProjectsView {
   @State projects: Project[] = [];
   @State openId: number = -1;
   @State showNew: boolean = false;
+  // v4.26（平板竖屏）：宽屏的弹层不再用 bindSheet。
+  //   bindSheet 的面板高度是平台按「内容高度」算的（平板竖屏实测只有 560vp），
+  //   卡片会被裁掉底部「保存/取消」，自己画的遮罩也只能盖住面板那一块。
+  //   ⇒ 宽屏改成在页面里自己铺一层遮罩 + 居中卡片（wideOverlay），窄屏仍是底部抽屉。
+  @State wideOpen: boolean = false;
+
+  /** v4.26：宽屏走页面内浮层，窄屏走 bindSheet 底部抽屉 */
+  private openSheet(): void {
+    if (this.wideMode()) {
+      this.wideOpen = true;
+      // 浮层盖住内容区时，右下角的悬浮按钮（在页面层）会浮到遮罩上面，先藏掉
+      AppStorage.setOrCreate<boolean>('wb_fab_hide', true);
+    } else {
+      this.showNew = true;
+    }
+  }
+
+  private closeSheet(): void {
+    this.showNew = false;
+    this.wideOpen = false;
+    AppStorage.setOrCreate<boolean>('wb_fab_hide', false);
+  }
+
+  /** v4.26：宽屏时铺在页面最上层的遮罩 + 居中卡片 */
+  @Builder
+  wideOverlay() {
+    if (this.wideMode() && this.wideOpen) {
+      this.newSheet()
+    }
+  }
+
   @State editId: number = -1;
   @State showArchived: boolean = false;
   onNavigate: (page: string) => void = () => {};
@@ -138,7 +169,7 @@ export struct ProjectsView {
     this.newColor = '#9B8AE6';
     this.newArea = 'work';
     this.newErr = '';
-    this.showNew = true;
+    this.openSheet();
   }
 
   private startEdit(p: Project): void {
@@ -149,7 +180,7 @@ export struct ProjectsView {
     this.newColor = p.color;
     this.newArea = p.area;
     this.newErr = '';
-    this.showNew = true;
+    this.openSheet();
   }
 
   private async add(): Promise<void> {
@@ -169,7 +200,7 @@ export struct ProjectsView {
         await Repo.patchProject(this.editId, body);
         await Store.I.reloadProjects();
         this.busy = false;
-        this.showNew = false;
+        this.closeSheet();
         this.editId = -1;
         toast(this.getUIContext(), '项目已更新');
       } catch (e) {
@@ -188,7 +219,7 @@ export struct ProjectsView {
     const ok: boolean = await Store.I.addProject(body);
     this.busy = false;
     if (ok) {
-      this.showNew = false;
+      this.closeSheet();
       this.newErr = '';
       toast(this.getUIContext(), '项目建好了');
     } else {
@@ -513,7 +544,7 @@ export struct ProjectsView {
         secondaryText: '取消',
         busy: this.busy,
         onPrimary: () => { this.add(); },
-        onSecondary: () => { this.showNew = false; }
+        onSecondary: () => { this.closeSheet(); }
       })
     }
     .width('100%')
@@ -526,7 +557,7 @@ export struct ProjectsView {
   @Builder newSheet() {
     SheetFrame({
       wide: this.wideMode(),
-      onClose: () => { this.showNew = false; this.editId = -1; },
+      onClose: () => { this.closeSheet(); this.editId = -1; },
       content: () => { this.newSheetBody(); }
     })
   }
@@ -542,96 +573,114 @@ export struct ProjectsView {
   }
 
   build() {
-    Scroll() {
-      Column() {
-        Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+    Stack() {
 
-        this.pageTop()
+      Scroll() {
+        Column() {
+          Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
 
-        // page-head
-        Row({ space: 10 }) {
-          Column({ space: 5 }) {
-            Text('PROJECTS · 项目进度').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
-            Text('手上的事，分成几摊。')
-              .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
-            Text('每个项目一个进度条，做久了能看出哪摊在推进、哪摊在拖。')
-              .fontSize(11).fontColor(tk(this.dark, 'textSub'))
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Bottom)
-        .padding({ top: 14, bottom: 14 })
+          this.pageTop()
 
-        if (this.activeProjects().length === 0 && this.archivedProjects().length === 0) {
-          Column({ space: 7 }) {
-            SymbolGlyph(sym('target')).fontSize(28).fontColor([tc(this.dark, '#C7D8E4', 1)])
-            Text('还没有项目').fontSize(14).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#5C7086', 1))
-            Text('把相关的任务归到一个项目里，比如「小记 v1 上线」「11 月副业」。')
-              .fontSize(11).fontColor(tc(this.dark, '#A8B8C6', 1))
-              .textAlign(TextAlign.Center)
-            Text('点右上角「新建项目」开始。')
-              .fontSize(11).fontColor(tc(this.dark, '#A8B8C6', 1))
-              .textAlign(TextAlign.Center)
-            Text('新建第一个项目')
-              .fontSize(11).fontColor(onFill(this.dark))
-              .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-              .borderRadius(S.radiusBtn)
-              .linearGradient({ angle: 140, colors: [['#1C7C74', 0], ['#1B7799', 1]] })
-              .margin({ top: 4 })
-              .onClick(() => { this.startNew(); })
+          // page-head
+          Row({ space: 10 }) {
+            Column({ space: 5 }) {
+              Text('PROJECTS · 项目进度').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
+              Text('手上的事，分成几摊。')
+                .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
+              Text('每个项目一个进度条，做久了能看出哪摊在推进、哪摊在拖。')
+                .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
           }
           .width('100%')
-          .padding({ top: 34, bottom: 34 })
-          .borderRadius(S.radiusCard)
-          .border({ width: 1, color: tc(this.dark, tc(this.dark, '#DDE9F3', 2), 2), style: BorderStyle.Dashed })
-          .backgroundColor(this.dark ? 'rgba(24,34,46,0.6)' : 'rgba(255,255,255,0.6)')
-          .alignItems(HorizontalAlign.Center)
-        } else {
-          ForEach(this.activeProjects(), (p: Project) => {
-            this.projCard(p)
-          }, (p: Project) => `pj-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}-${this.tick}`)
+          .alignItems(VerticalAlign.Bottom)
+          .padding({ top: 14, bottom: 14 })
 
-          if (this.archivedProjects().length > 0) {
-            Text('已归档')
-              .fontSize(10.5).fontColor(tc(this.dark, '#A8B8C6', 1)).fontWeight(FontWeight.Medium)
-              .letterSpacing(0.4)
-              .width('100%')
-              .margin({ top: 8, bottom: 4 })
-            ForEach(this.archivedProjects(), (p: Project) => {
+          if (this.activeProjects().length === 0 && this.archivedProjects().length === 0) {
+            Column({ space: 7 }) {
+              SymbolGlyph(sym('target')).fontSize(28).fontColor([tc(this.dark, '#C7D8E4', 1)])
+              Text('还没有项目').fontSize(14).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#5C7086', 1))
+              Text('把相关的任务归到一个项目里，比如「小记 v1 上线」「11 月副业」。')
+                .fontSize(11).fontColor(tc(this.dark, '#A8B8C6', 1))
+                .textAlign(TextAlign.Center)
+              Text('点右上角「新建项目」开始。')
+                .fontSize(11).fontColor(tc(this.dark, '#A8B8C6', 1))
+                .textAlign(TextAlign.Center)
+              Text('新建第一个项目')
+                .fontSize(11).fontColor(onFill(this.dark))
+                .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+                .borderRadius(S.radiusBtn)
+                .linearGradient({ angle: 140, colors: [['#1C7C74', 0], ['#1B7799', 1]] })
+                .margin({ top: 4 })
+                .onClick(() => { this.startNew(); })
+            }
+            .width('100%')
+            .padding({ top: 34, bottom: 34 })
+            .borderRadius(S.radiusCard)
+            .border({ width: 1, color: tc(this.dark, tc(this.dark, '#DDE9F3', 2), 2), style: BorderStyle.Dashed })
+            .backgroundColor(this.dark ? 'rgba(24,34,46,0.6)' : 'rgba(255,255,255,0.6)')
+            .alignItems(HorizontalAlign.Center)
+          } else {
+            ForEach(this.activeProjects(), (p: Project) => {
               this.projCard(p)
-            }, (p: Project) => `pja-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}`)
+            }, (p: Project) => `pj-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}-${this.tick}`)
+
+            if (this.archivedProjects().length > 0) {
+              Text('已归档')
+                .fontSize(10.5).fontColor(tc(this.dark, '#A8B8C6', 1)).fontWeight(FontWeight.Medium)
+                .letterSpacing(0.4)
+                .width('100%')
+                .margin({ top: 8, bottom: 4 })
+              ForEach(this.archivedProjects(), (p: Project) => {
+                this.projCard(p)
+              }, (p: Project) => `pja-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}`)
+            }
+          }
+
+          if (this.projects.length > 0 && this.unassignedCount() > 0) {
+            Text(`还有 ${this.kUnassigned} 件任务没归到项目里。在任务面板编辑任务时选一下项目就行。`)
+              .fontSize(10.5)
+              .fontColor(tc(this.dark, '#A8B8C6', 1))
+              .width('100%')
+              .margin({ top: 6, bottom: S.pageBottom })
           }
         }
-
-        if (this.projects.length > 0 && this.unassignedCount() > 0) {
-          Text(`还有 ${this.kUnassigned} 件任务没归到项目里。在任务面板编辑任务时选一下项目就行。`)
-            .fontSize(10.5)
-            .fontColor(tc(this.dark, '#A8B8C6', 1))
-            .width('100%')
-            .margin({ top: 6, bottom: S.pageBottom })
-        }
+        .width('100%')
+        .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+        .alignItems(HorizontalAlign.Start)
       }
+      .onScrollEdge(onEdgeScrolled)
+      .onWillScroll(onEdgeWillScroll)
+      .align(Alignment.TopStart)
       .width('100%')
-      .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
-      .alignItems(HorizontalAlign.Start)
+      .height('100%')
+      .scrollBar(BarState.Off)
+      .constraintSize({ maxWidth: 1240 })
+      .backgroundColor(tk(this.dark, 'bg'))
+      .edgeEffect(EdgeEffect.Spring)
+      .bindSheet($$this.showNew, this.newSheet(), {
+        // v4.26：宽屏时给「窗口高度」这个绝对值，别写 '100%'
+        //   （bindSheet 面板里百分比会被当成内容高度，面板撑不满、卡片不居中）
+        // v4.26：宽屏时用 SheetSize.LARGE（面板几乎占满屏幕），窄屏还是贴底抽屉。
+        //   之前写 '100%'，在 bindSheet 面板里百分比被解析成「内容高度」，
+        //   面板只有 864vp（竖屏实测），卡片被顶到下半屏、遮罩也只盖住下半屏。
+          height: SheetSize.FIT_CONTENT,
+        dragBar: !this.wideMode(),
+        showClose: false,
+        backgroundColor: Color.Transparent,   // 面板透明，弹层内容自己带圆角白底
+        width: '100%'})
+  
+
+      // v4.26（平板竖屏）：宽屏的弹层在页面里自己画 —— bindSheet 的面板高度是
+      //   平台按「内容高度」算的（竖屏实测只有 560vp），卡片会被裁掉底部按钮，
+      //   自己画的遮罩也只能盖住面板那一块。窄屏仍然走 bindSheet 底部抽屉。
+      if (this.wideMode() && this.wideOpen) {
+        this.newSheet()
+      }
     }
-    .onScrollEdge(onEdgeScrolled)
-    .onWillScroll(onEdgeWillScroll)
-    .align(Alignment.TopStart)
     .width('100%')
     .height('100%')
-    .scrollBar(BarState.Off)
-    .constraintSize({ maxWidth: 1240 })
-    .backgroundColor(tk(this.dark, 'bg'))
-    .edgeEffect(EdgeEffect.Spring)
-    .bindSheet($$this.showNew, this.newSheet(), {
-      height: this.wideMode() ? '100%' : SheetSize.FIT_CONTENT,
-      dragBar: !this.wideMode(),
-      showClose: false,
-      backgroundColor: Color.Transparent,   // 面板透明，弹层内容自己带圆角白底
-      width: '100%'})
   }
 
   /** 自绘确认弹窗的内容（由 utils/Confirm.ets 挂到系统级弹窗层） */

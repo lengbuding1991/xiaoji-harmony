@@ -16,7 +16,7 @@
  * 遮罩色、圆角、阴影都和记录灵感的编辑器保持一致（rgba(23,52,80,0.42) / 22 / radius 30）。
  */
 import { C, tk, tc } from '../utils/Theme';
-import { onEdgeScrolled, onEdgeWillScroll } from '../utils/EdgeHint';
+import { R } from '../utils/Responsive';
 
 @Component
 export struct SheetFrame {
@@ -29,6 +29,7 @@ export struct SheetFrame {
   /** 弹层本体（由调用方用 `content: () => { this.xxx(); }` 传进来） */
   @BuilderParam content: () => void = this.emptyContent;
 
+
   /** @BuilderParam 的默认值必须是一个 @Builder 方法（编译器要求） */
   @Builder
   emptyContent() {
@@ -37,7 +38,7 @@ export struct SheetFrame {
   build() {
     if (this.wide) {
       Stack({ alignContent: Alignment.Center }) {
-        // 遮罩：点一下关掉弹层
+        // 遮罩：点一下关掉弹层（v4.26 宽屏走页面内浮层，遮罩由这里画）
         Column()
           .width('100%')
           .height('100%')
@@ -45,22 +46,25 @@ export struct SheetFrame {
           .onClick(() => { this.onClose(); })
 
         // 卡片：居中、限宽、限高
+        //
+        // v4.26（平板竖屏）：宽屏时各页的 bindSheet 改用系统的「居中弹窗」形态
+        //   （SheetOptions.preferType = SheetType.POPUP）——遮罩由系统画、铺满整屏。
+        //   之前这里自己画遮罩，试过三种面板高度（'100%' / R.windowH() 数值 / SheetSize.LARGE），
+        //   实测 bindSheet 的面板高度是平台按「内容高度」算的（平板竖屏只有 560vp），
+        //   自己画的遮罩最多只能盖住面板那一块 ⇒ 屏幕上半部分不暗、卡片底部按钮被裁掉。
+        //   改用 POPUP 后，遮罩是系统的、整屏都暗，卡片自己居中。
+        //
+        // v4.25：这里原来还套了一层 Scroll，结果把内容自己的 Scroll 的手势吃掉了 ——
+        //   外层 Scroll 先拿到拖动，而它的内容（表单那张卡）比它自己的 maxHeight 矮，
+        //   外层滚不动 ⇒ 手指在表单上怎么拖都没反应；反过来，窗口比屏幕矮的时候
+        //   （平板横屏 / 分屏 / 悬浮窗），外层需要滚却滚不动 ⇒ 底下的「保存」永远够不着。
+        //   ⇒ 直接渲染内容，不套第二层 Scroll；高度由内容自己的 Scroll 负责，
+        //   整张卡片再用 sheetMaxH() 卡住，保证「头部 + 表单 + 按钮条」都在窗口里。
         Column() {
-          Scroll() {
-            Column() {
-              this.content()
-            }
-            .width('100%')
-          }
-          .onScrollEdge(onEdgeScrolled)
-          .onWillScroll(onEdgeWillScroll)
-          .edgeEffect(EdgeEffect.Spring)
-          .width('100%')
-          .constraintSize({ maxHeight: '82%' })
-          .scrollBar(BarState.Off)
+          this.content()
         }
         .width('92%')
-        .constraintSize({ maxWidth: 520 })
+        .constraintSize({ maxWidth: 520, maxHeight: R.sheetMaxH() })
         .backgroundColor(tk(this.dark, 'card'))
         .borderRadius(22)
         .clip(true)

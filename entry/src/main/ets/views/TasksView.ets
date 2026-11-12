@@ -3,6 +3,7 @@
 // → kanban 三列（手机上竖排）→ tasks-extra 两张卡（近七天收尾节奏 / 刚刚做完的）。
 import { Store, isConsumedRepeat } from '../store/Store';
 import { areaColor, areaLabel, C, catBg, catColor, onFill, S, tc, tk } from '../utils/Theme';
+import { R } from '../utils/Responsive';
 import { D } from '../utils/DateUtil';
 import { Card } from '../components/Card';
 import { Chip } from '../components/Widgets';
@@ -36,6 +37,37 @@ export struct TasksView {
   @State area: string = 'all';
   @State due: string = 'all';
   @State showAdd: boolean = false;
+  // v4.26（平板竖屏）：宽屏的弹层不再用 bindSheet。
+  //   bindSheet 的面板高度是平台按「内容高度」算的（平板竖屏实测只有 560vp），
+  //   卡片会被裁掉底部「保存/取消」，自己画的遮罩也只能盖住面板那一块。
+  //   ⇒ 宽屏改成在页面里自己铺一层遮罩 + 居中卡片（wideOverlay），窄屏仍是底部抽屉。
+  @State wideOpen: boolean = false;
+
+  /** v4.26：宽屏走页面内浮层，窄屏走 bindSheet 底部抽屉 */
+  private openSheet(): void {
+    if (this.wideMode()) {
+      this.wideOpen = true;
+      // 浮层盖住内容区时，右下角的悬浮按钮（在页面层）会浮到遮罩上面，先藏掉
+      AppStorage.setOrCreate<boolean>('wb_fab_hide', true);
+    } else {
+      this.showAdd = true;
+    }
+  }
+
+  private closeSheet(): void {
+    this.showAdd = false;
+    this.wideOpen = false;
+    AppStorage.setOrCreate<boolean>('wb_fab_hide', false);
+  }
+
+  /** v4.26：宽屏时铺在页面最上层的遮罩 + 居中卡片 */
+  @Builder
+  wideOverlay() {
+    if (this.wideMode() && this.wideOpen) {
+      this.sheetContent()
+    }
+  }
+
   @State editingId: number = -1;
   @State addStatus: string = 'todo';
   @State busy: boolean = false;
@@ -510,7 +542,7 @@ export struct TasksView {
       if (Date.now() - this.dragAt < 800) { return; }
       this.editingId = t.id;
       this.addStatus = t.status;
-      this.showAdd = true;
+      this.openSheet();
     })
     // 长按 → 拖到别的状态：先长按识别成功，之后的平移才算拖拽
     .gesture(
@@ -586,7 +618,7 @@ export struct TasksView {
       .onClick(() => {
         this.editingId = -1;
         this.addStatus = status;
-        this.showAdd = true;
+        this.openSheet();
       })
     }
     .width('100%')
@@ -704,12 +736,12 @@ export struct TasksView {
       defaultStatus: this.addStatus,
       onSaved: () => {
         const wasEdit: boolean = this.editingId > 0;
-        this.showAdd = false;
+        this.closeSheet();
         this.editingId = -1;
         toast(this.getUIContext(), wasEdit ? '任务已更新' : '任务已添加');
       },
       onCancel: () => {
-        this.showAdd = false;
+        this.closeSheet();
         this.editingId = -1;
       }
     })
@@ -719,7 +751,7 @@ export struct TasksView {
   @Builder sheetContent() {
     SheetFrame({
       wide: this.wideMode(),
-      onClose: () => { this.showAdd = false; this.editingId = -1; },
+      onClose: () => { this.closeSheet(); this.editingId = -1; },
       content: () => { this.sheetBody(); }
     })
   }
@@ -730,7 +762,7 @@ export struct TasksView {
       // v4.8：原来这里有个「多选」按钮，但 App 根本没有批量功能（拖拽只能改状态），
       // 用户也说了「那个没啥用」⇒ 直接删掉，不再占位置。
       secondaryText: '',
-      onPrimary: () => { this.editingId = -1; this.addStatus = 'todo'; this.showAdd = true; },
+      onPrimary: () => { this.editingId = -1; this.addStatus = 'todo'; this.openSheet(); },
       onSearch: () => { this.onNavigate('search'); },
       onCalendar: () => { this.onNavigate('calendar'); }
     })
@@ -738,275 +770,293 @@ export struct TasksView {
   }
 
   build() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
-          Column({ space: 0 }) {
-          Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+    Stack() {
 
-          this.pageTop()
+      Stack({ alignContent: Alignment.TopStart }) {
+        Scroll() {
+            Column({ space: 0 }) {
+            Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
 
-          // page-head
-          Column({ space: 5 }) {
-            Text('TASKS · 任务面板').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
-            Text('所有事，都在这里。')
-              .fontSize(23)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(tk(this.dark, 'text'))
-              .letterSpacing(-0.5)
-            Row({ space: 0 }) {
-              Text(`${this.cOpen} 件待处理 · 共 ${this.cTotal} 件`)
-                .fontSize(11).fontColor(tk(this.dark, 'textSub'))
-              if (this.cOverdue > 0) {
-                Text(` · ${this.cOverdue} 件已逾期`)
-                  .fontSize(11).fontColor(tc(this.dark, '#D2795C', 1))
-              }
-              if (this.cForever > 0) {
-                Text(` · ${this.cForever} 件长期`)
+            this.pageTop()
+
+            // page-head
+            Column({ space: 5 }) {
+              Text('TASKS · 任务面板').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
+              Text('所有事，都在这里。')
+                .fontSize(23)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(tk(this.dark, 'text'))
+                .letterSpacing(-0.5)
+              Row({ space: 0 }) {
+                Text(`${this.cOpen} 件待处理 · 共 ${this.cTotal} 件`)
+                  .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+                if (this.cOverdue > 0) {
+                  Text(` · ${this.cOverdue} 件已逾期`)
+                    .fontSize(11).fontColor(tc(this.dark, '#D2795C', 1))
+                }
+                if (this.cForever > 0) {
+                  Text(` · ${this.cForever} 件长期`)
+                    .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+                }
+                Text(' · 按住卡片拖到别的列，就能改状态')
                   .fontSize(11).fontColor(tk(this.dark, 'textSub'))
               }
-              Text(' · 按住卡片拖到别的列，就能改状态')
-                .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+              .width('100%')
+              .flexShrink(0)
             }
             .width('100%')
-            .flexShrink(0)
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-          .padding({ top: 14, bottom: 14 })
+            .alignItems(HorizontalAlign.Start)
+            .padding({ top: 14, bottom: 14 })
 
-          // v4.8：宽屏一行四个（网页版 .tstats{repeat(4,1fr)}），窄屏仍 2×2
-          if (this.layoutMode >= 1) {
-            Row({ space: 10 }) {
-              this.tstat('#E8F2FC', '#1A6499', '待在待办', 'todo', false)
-              this.tstat('#FDF4DC', '#8A5A0F', '正在做', 'doing', false)
-              this.tstat('#E3F8F2', '#0F6E58', '已完成', 'done', false)
-              this.tstat('#FBEDE9', '#A64B2E', '已逾期', 'overdue', true)
-            }.width('100%')
-          } else {
-            Row({ space: 10 }) {
-              this.tstat('#E8F2FC', '#1A6499', '待在待办', 'todo', false)
-              this.tstat('#FDF4DC', '#8A5A0F', '正在做', 'doing', false)
-            }.width('100%')
-            Row({ space: 10 }) {
-              this.tstat('#E3F8F2', '#0F6E58', '已完成', 'done', false)
-              this.tstat('#FBEDE9', '#A64B2E', '已逾期', 'overdue', true)
-            }.width('100%').margin({ top: 10 })
-          }
+            // v4.8：宽屏一行四个（网页版 .tstats{repeat(4,1fr)}），窄屏仍 2×2
+            if (this.layoutMode >= 1) {
+              Row({ space: 10 }) {
+                this.tstat('#E8F2FC', '#1A6499', '待在待办', 'todo', false)
+                this.tstat('#FDF4DC', '#8A5A0F', '正在做', 'doing', false)
+                this.tstat('#E3F8F2', '#0F6E58', '已完成', 'done', false)
+                this.tstat('#FBEDE9', '#A64B2E', '已逾期', 'overdue', true)
+              }.width('100%')
+            } else {
+              Row({ space: 10 }) {
+                this.tstat('#E8F2FC', '#1A6499', '待在待办', 'todo', false)
+                this.tstat('#FDF4DC', '#8A5A0F', '正在做', 'doing', false)
+              }.width('100%')
+              Row({ space: 10 }) {
+                this.tstat('#E3F8F2', '#0F6E58', '已完成', 'done', false)
+                this.tstat('#FBEDE9', '#A64B2E', '已逾期', 'overdue', true)
+              }.width('100%').margin({ top: 10 })
+            }
 
-          // filters
-          Flex({ wrap: FlexWrap.Wrap }) {
-            Chip({ text: '全部', active: this.area === 'all', onTap: () => { this.area = 'all'; this.recount(); } })
-            ForEach(['work', 'side', 'media', 'study', 'life'], (a: string) => {
-              Chip({ text: areaLabel(a), active: this.area === a, onTap: () => { this.area = a; this.recount(); } })
-            }, (a: string) => `f-${a}`)
-          }
-          .width('100%')
-          .margin({ top: 12 })
-
-          Flex({ wrap: FlexWrap.Wrap }) {
-            Chip({ text: '今天', active: this.due === 'today', onTap: () => { this.due = this.due === 'today' ? 'all' : 'today'; this.recount(); } })
-            Chip({ text: '本周', active: this.due === 'week', onTap: () => { this.due = this.due === 'week' ? 'all' : 'week'; this.recount(); } })
-            Chip({ text: '逾期', active: this.due === 'overdue', onTap: () => { this.due = this.due === 'overdue' ? 'all' : 'overdue'; this.recount(); } })
-            Chip({ text: '长期', active: this.due === 'forever', onTap: () => { this.due = this.due === 'forever' ? 'all' : 'forever'; this.recount(); } })
-          }
-          .width('100%')
-          .margin({ top: 6 })
-
-          // v4.8：宽屏三列并排（网页版 .kanban{repeat(3,1fr)}），窄屏仍竖排
-          if (this.layoutMode >= 2) {
-            Row({ space: 10 }) {
-              this.colBox('todo', '待办', '#1A6499')
-              this.colBox('doing', '进行中', '#8A5A0F')
-              this.colBox('done', '完成', '#12706B')
+            // filters
+            Flex({ wrap: FlexWrap.Wrap }) {
+              Chip({ text: '全部', active: this.area === 'all', onTap: () => { this.area = 'all'; this.recount(); } })
+              ForEach(['work', 'side', 'media', 'study', 'life'], (a: string) => {
+                Chip({ text: areaLabel(a), active: this.area === a, onTap: () => { this.area = a; this.recount(); } })
+              }, (a: string) => `f-${a}`)
             }
             .width('100%')
-            .alignItems(VerticalAlign.Top)
-            .margin({ top: 6 })
-          } else {
-            Column() {
-              this.col('todo', '待办', '#1A6499')
-              this.col('doing', '进行中', '#8A5A0F')
-              this.col('done', '完成', '#12706B')
+            .margin({ top: 12 })
+
+            Flex({ wrap: FlexWrap.Wrap }) {
+              Chip({ text: '今天', active: this.due === 'today', onTap: () => { this.due = this.due === 'today' ? 'all' : 'today'; this.recount(); } })
+              Chip({ text: '本周', active: this.due === 'week', onTap: () => { this.due = this.due === 'week' ? 'all' : 'week'; this.recount(); } })
+              Chip({ text: '逾期', active: this.due === 'overdue', onTap: () => { this.due = this.due === 'overdue' ? 'all' : 'overdue'; this.recount(); } })
+              Chip({ text: '长期', active: this.due === 'forever', onTap: () => { this.due = this.due === 'forever' ? 'all' : 'forever'; this.recount(); } })
             }
             .width('100%')
             .margin({ top: 6 })
-          }
 
-          // tasks-extra
-          Column() {
-            Card({ title: '最近七天收尾节奏', sub: '每天完成的任务数' }) {
-              Column({ space: 2 }) {
-                if (this.last7Max() === 0) {
-                  // 近七天一件都没收尾：不画七条空槽，直接给一句空态，省得看着像「全是满格」
-                  Column({ space: 6 }) {
-                    Text('最近七天还没有收尾的任务')
-                      .fontSize(11)
-                      .fontColor(tk(this.dark, 'textSub'))
-                    Text('挑一件 10 分钟能做完的，先划掉它')
-                      .fontSize(10)
-                      .fontColor(tk(this.dark, 'textPale'))
-                  }
-                  .width('100%')
-                  .padding({ top: 22, bottom: 22 })
-                  .justifyContent(FlexAlign.Center)
-                  .borderRadius(12)
-                  .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
-                } else {
-                  ForEach(this.last7(), (n: number, i: number) => {
-                    Row({ space: 10 }) {
-                      Text(this.last7Label(i))
-                        .fontSize(S.tinySize)
-                        .fontColor(i === 6 ? tc(this.dark, '#2FA9A3', 1) : tc(this.dark, '#93A6B6', 1))
-                        .width(64)
-                        .flexShrink(0)
-                      Row() {
-                        Row()
-                          .height('100%')
-                          .width(`${Math.max(n === 0 ? 0 : 8, Math.round(n / this.last7Max() * 100))}%`)
-                          .borderRadius(99)
-                          .linearGradient(i === 6
-                            ? { angle: 90, colors: [['#1C7C74', 0], ['#12706B', 1]] }
-                            : { angle: 90, colors: [['#2E8E84', 0], ['#12706B', 1]] })
-                      }
-                      .layoutWeight(1)
-                      .height(11)
-                      .borderRadius(99)
-                      .backgroundColor(tc(this.dark, '#EFF7FB', 0))
-                      .alignItems(VerticalAlign.Center)
-                      Text(n === 0 ? '—' : `${n} 件`)
-                        .fontSize(10)
-                        .fontColor(n === 0 ? tc(this.dark, '#C8D8E4', 1) : tc(this.dark, '#5E7183', 1))
-                        .width(34)
-                        .textAlign(TextAlign.End)
-                        .flexShrink(0)
-                    }
-                    .width('100%')
-                    .padding({ left: 8, right: 6, top: 6, bottom: 6 })
-                    .alignItems(VerticalAlign.Center)
-                  }, (n: number, i: number) => `l7-${i}-${n}`)
-                }
-
-                Divider().color('#EDF4FA').strokeWidth(1).margin({ top: 6 })
-                Row({ space: 5 }) {
-                  Text('这周完成').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                  Text(`${this.cWeekDone}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
-                  Text('件 · 近七天平均每天').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                  Text(`${this.cLast7Avg.toFixed(1)}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
-                  Text('件').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                  Blank()
-                }
-                .width('100%')
-                .margin({ top: 8 })
-                .alignItems(VerticalAlign.Center)
+            // v4.8：宽屏三列并排（网页版 .kanban{repeat(3,1fr)}），窄屏仍竖排
+            if (this.layoutMode >= 2) {
+              Row({ space: 10 }) {
+                this.colBox('todo', '待办', '#1A6499')
+                this.colBox('doing', '进行中', '#8A5A0F')
+                this.colBox('done', '完成', '#12706B')
               }
               .width('100%')
+              .alignItems(VerticalAlign.Top)
+              .margin({ top: 6 })
+            } else {
+              Column() {
+                this.col('todo', '待办', '#1A6499')
+                this.col('doing', '进行中', '#8A5A0F')
+                this.col('done', '完成', '#12706B')
+              }
+              .width('100%')
+              .margin({ top: 6 })
             }
-          }
-          .width('100%')
-          .margin({ top: 16 })
 
-          Column() {
-            Card({ title: '刚刚做完的', sub: '最近完成' }) {
-              Column({ space: 7 }) {
-                if (this.recentDone().length === 0) {
-                  Text('还没有完成的任务，先挑一件小的开始')
-                    .fontSize(10)
-                    .fontColor(tk(this.dark, 'textPale'))
+            // tasks-extra
+            Column() {
+              Card({ title: '最近七天收尾节奏', sub: '每天完成的任务数' }) {
+                Column({ space: 2 }) {
+                  if (this.last7Max() === 0) {
+                    // 近七天一件都没收尾：不画七条空槽，直接给一句空态，省得看着像「全是满格」
+                    Column({ space: 6 }) {
+                      Text('最近七天还没有收尾的任务')
+                        .fontSize(11)
+                        .fontColor(tk(this.dark, 'textSub'))
+                      Text('挑一件 10 分钟能做完的，先划掉它')
+                        .fontSize(10)
+                        .fontColor(tk(this.dark, 'textPale'))
+                    }
                     .width('100%')
-                    .textAlign(TextAlign.Center)
-                    .padding({ top: 30, bottom: 30 })
+                    .padding({ top: 22, bottom: 22 })
+                    .justifyContent(FlexAlign.Center)
                     .borderRadius(12)
                     .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
-                } else {
-                  ForEach(this.recentDone(), (t: Task) => {
-                    Row({ space: 9 }) {
-                      Row() {
-                        // v4.23：fs14 的勾盒子 14x14vp，圆放大到 18vp 才装得下
-                        SymbolGlyph(sym('check')).fontSize(14).fontColor([onFill(this.dark)])
-                      }
-                      .width(18)
-                      .height(18)
-                      .borderRadius(9)
-                      .backgroundColor(tk(this.dark, 'brand'))
-                      .justifyContent(FlexAlign.Center)
-                      .alignItems(VerticalAlign.Center)
-                      Text(t.title)
-                        .fontSize(11.5)
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor(tc(this.dark, '#2C4257', 1))
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  } else {
+                    ForEach(this.last7(), (n: number, i: number) => {
+                      Row({ space: 10 }) {
+                        Text(this.last7Label(i))
+                          .fontSize(S.tinySize)
+                          .fontColor(i === 6 ? tc(this.dark, '#2FA9A3', 1) : tc(this.dark, '#93A6B6', 1))
+                          .width(64)
+                          .flexShrink(0)
+                        Row() {
+                          Row()
+                            .height('100%')
+                            .width(`${Math.max(n === 0 ? 0 : 8, Math.round(n / this.last7Max() * 100))}%`)
+                            .borderRadius(99)
+                            .linearGradient(i === 6
+                              ? { angle: 90, colors: [['#1C7C74', 0], ['#12706B', 1]] }
+                              : { angle: 90, colors: [['#2E8E84', 0], ['#12706B', 1]] })
+                        }
                         .layoutWeight(1)
-                      Text(t.done_at !== null ? `${D.slashMd(D.parse(t.done_at))} ${D.hm(t.done_at)}` : '')
-                        .fontSize(9)
-                        .fontColor(tk(this.dark, 'textHint'))
-                        .flexShrink(0)
-                    }
-                    .width('100%')
-                    .padding({ left: 11, right: 11, top: 8, bottom: 8 })
-                    .borderRadius(11)
-                    .backgroundColor(tc(this.dark, '#F8FCFF', 0))
-                    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#EEF6FB', 2), 2) })
-                    .alignItems(VerticalAlign.Center)
-                  }, (t: Task) => `rd-${t.id}-${this.tick}`)
-                }
+                        .height(11)
+                        .borderRadius(99)
+                        .backgroundColor(tc(this.dark, '#EFF7FB', 0))
+                        .alignItems(VerticalAlign.Center)
+                        Text(n === 0 ? '—' : `${n} 件`)
+                          .fontSize(10)
+                          .fontColor(n === 0 ? tc(this.dark, '#C8D8E4', 1) : tc(this.dark, '#5E7183', 1))
+                          .width(34)
+                          .textAlign(TextAlign.End)
+                          .flexShrink(0)
+                      }
+                      .width('100%')
+                      .padding({ left: 8, right: 6, top: 6, bottom: 6 })
+                      .alignItems(VerticalAlign.Center)
+                    }, (n: number, i: number) => `l7-${i}-${n}`)
+                  }
 
-                if (this.recentDone().length < 3) {
-                  Column({ space: 3 }) {
-                    Text('节奏是靠小事带起来的').fontSize(10).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#9FB2C2', 1))
-                    Text('挑一件 10 分钟能收尾的，先划掉它').fontSize(S.tinySize).fontColor(tk(this.dark, 'textPale'))
+                  Divider().color('#EDF4FA').strokeWidth(1).margin({ top: 6 })
+                  Row({ space: 5 }) {
+                    Text('这周完成').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                    Text(`${this.cWeekDone}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
+                    Text('件 · 近七天平均每天').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                    Text(`${this.cLast7Avg.toFixed(1)}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
+                    Text('件').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                    Blank()
                   }
                   .width('100%')
-                  .padding({ top: 14, bottom: 14 })
-                  .borderRadius(12)
-                  .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
-                  .alignItems(HorizontalAlign.Center)
-                }
-
-                Divider().color('#EDF4FA').strokeWidth(1).margin({ top: 4 })
-                Row({ space: 5 }) {
-                  Text('累计完成').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                  Text(`${this.cDoneAll}`)
-                    .fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
-                  Text('件 · 还有').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                  Text(`${this.cOpen}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
-                  Text('件在路上').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                  Blank()
+                  .margin({ top: 8 })
+                  .alignItems(VerticalAlign.Center)
                 }
                 .width('100%')
-                .margin({ top: 8 })
-                .alignItems(VerticalAlign.Center)
               }
-              .width('100%')
             }
+            .width('100%')
+            .margin({ top: 16 })
+
+            Column() {
+              Card({ title: '刚刚做完的', sub: '最近完成' }) {
+                Column({ space: 7 }) {
+                  if (this.recentDone().length === 0) {
+                    Text('还没有完成的任务，先挑一件小的开始')
+                      .fontSize(10)
+                      .fontColor(tk(this.dark, 'textPale'))
+                      .width('100%')
+                      .textAlign(TextAlign.Center)
+                      .padding({ top: 30, bottom: 30 })
+                      .borderRadius(12)
+                      .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
+                  } else {
+                    ForEach(this.recentDone(), (t: Task) => {
+                      Row({ space: 9 }) {
+                        Row() {
+                          // v4.23：fs14 的勾盒子 14x14vp，圆放大到 18vp 才装得下
+                          SymbolGlyph(sym('check')).fontSize(14).fontColor([onFill(this.dark)])
+                        }
+                        .width(18)
+                        .height(18)
+                        .borderRadius(9)
+                        .backgroundColor(tk(this.dark, 'brand'))
+                        .justifyContent(FlexAlign.Center)
+                        .alignItems(VerticalAlign.Center)
+                        Text(t.title)
+                          .fontSize(11.5)
+                          .fontWeight(FontWeight.Medium)
+                          .fontColor(tc(this.dark, '#2C4257', 1))
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          .layoutWeight(1)
+                        Text(t.done_at !== null ? `${D.slashMd(D.parse(t.done_at))} ${D.hm(t.done_at)}` : '')
+                          .fontSize(9)
+                          .fontColor(tk(this.dark, 'textHint'))
+                          .flexShrink(0)
+                      }
+                      .width('100%')
+                      .padding({ left: 11, right: 11, top: 8, bottom: 8 })
+                      .borderRadius(11)
+                      .backgroundColor(tc(this.dark, '#F8FCFF', 0))
+                      .border({ width: 1, color: tc(this.dark, tc(this.dark, '#EEF6FB', 2), 2) })
+                      .alignItems(VerticalAlign.Center)
+                    }, (t: Task) => `rd-${t.id}-${this.tick}`)
+                  }
+
+                  if (this.recentDone().length < 3) {
+                    Column({ space: 3 }) {
+                      Text('节奏是靠小事带起来的').fontSize(10).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#9FB2C2', 1))
+                      Text('挑一件 10 分钟能收尾的，先划掉它').fontSize(S.tinySize).fontColor(tk(this.dark, 'textPale'))
+                    }
+                    .width('100%')
+                    .padding({ top: 14, bottom: 14 })
+                    .borderRadius(12)
+                    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
+                    .alignItems(HorizontalAlign.Center)
+                  }
+
+                  Divider().color('#EDF4FA').strokeWidth(1).margin({ top: 4 })
+                  Row({ space: 5 }) {
+                    Text('累计完成').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                    Text(`${this.cDoneAll}`)
+                      .fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
+                    Text('件 · 还有').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                    Text(`${this.cOpen}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
+                    Text('件在路上').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                    Blank()
+                  }
+                  .width('100%')
+                  .margin({ top: 8 })
+                  .alignItems(VerticalAlign.Center)
+                }
+                .width('100%')
+              }
+            }
+            .width('100%')
+            .margin({ top: 14, bottom: S.pageBottom })
           }
           .width('100%')
-          .margin({ top: 14, bottom: S.pageBottom })
+          .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+          .alignItems(HorizontalAlign.Start)
         }
+        .onScrollEdge(onEdgeScrolled)
+        .onWillScroll(onEdgeWillScroll)
+        .align(Alignment.TopStart)
         .width('100%')
-        .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
-        .alignItems(HorizontalAlign.Start)
+        .height('100%')
+        .scrollBar(BarState.Off)
+        .constraintSize({ maxWidth: 1240 })
+        .backgroundColor(tk(this.dark, 'bg'))
+        .edgeEffect(EdgeEffect.Spring)
+        .bindSheet($$this.showAdd, this.sheetContent(), {
+          // v4.6：宽屏时弹层变成「全屏透明 + 居中卡片」，窄屏保持底部抽屉
+          // v4.26：宽屏时给「窗口高度」这个绝对值，别写 '100%'
+        //   （bindSheet 面板里百分比会被当成内容高度，面板撑不满、卡片不居中）
+        // v4.26：宽屏时用 SheetSize.LARGE（面板几乎占满屏幕），窄屏还是贴底抽屉。
+        //   之前写 '100%'，在 bindSheet 面板里百分比被解析成「内容高度」，
+        //   面板只有 864vp（竖屏实测），卡片被顶到下半屏、遮罩也只盖住下半屏。
+          height: SheetSize.FIT_CONTENT,
+          dragBar: !this.wideMode(),
+          showClose: false,
+          backgroundColor: Color.Transparent,   // 面板透明，弹层内容自己带圆角白底
+          width: '100%'
+        })
+
+        if (this.dragId > 0) {
+          this.dragOverlay()
+        }
       }
-      .onScrollEdge(onEdgeScrolled)
-      .onWillScroll(onEdgeWillScroll)
-      .align(Alignment.TopStart)
       .width('100%')
       .height('100%')
-      .scrollBar(BarState.Off)
-      .constraintSize({ maxWidth: 1240 })
-      .backgroundColor(tk(this.dark, 'bg'))
-      .edgeEffect(EdgeEffect.Spring)
-      .bindSheet($$this.showAdd, this.sheetContent(), {
-        // v4.6：宽屏时弹层变成「全屏透明 + 居中卡片」，窄屏保持底部抽屉
-        height: this.wideMode() ? '100%' : SheetSize.FIT_CONTENT,
-        dragBar: !this.wideMode(),
-        showClose: false,
-        backgroundColor: Color.Transparent,   // 面板透明，弹层内容自己带圆角白底
-        width: '100%'
-      })
+  
 
-      if (this.dragId > 0) {
-        this.dragOverlay()
+      // v4.26（平板竖屏）：宽屏的弹层在页面里自己画 —— bindSheet 的面板高度是
+      //   平台按「内容高度」算的（竖屏实测只有 560vp），卡片会被裁掉底部按钮，
+      //   自己画的遮罩也只能盖住面板那一块。窄屏仍然走 bindSheet 底部抽屉。
+      if (this.wideMode() && this.wideOpen) {
+        this.sheetContent()
       }
     }
     .width('100%')

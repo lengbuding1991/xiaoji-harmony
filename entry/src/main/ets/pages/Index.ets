@@ -12,9 +12,6 @@ import { R, Layout } from '../utils/Responsive';
 import { SideRail } from '../components/SideRail';
 import { KeyboardAvoidMode } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { common } from '@kit.AbilityKit';
-import { Privacy } from '../utils/Privacy';
-import { PrivacyDialog } from '../components/PrivacyDialog';
 import { PolicyView } from '../views/PolicyView';
 
 import { HomeView } from '../views/HomeView';
@@ -70,8 +67,6 @@ struct Index {
   // v4.6：横屏时系统导航条可能在左右两侧，悬浮按钮要躲开
   @StorageLink('wb_side_inset') sideInset: number = 0;
   // v4.7：隐私门。同意《用户协议》《隐私政策》之前不进入 App（应用市场审核要求）
-  @StorageLink('wb_privacy_ok') privacyOk: boolean = false;
-  @StorageLink('wb_privacy_ready') privacyReady: boolean = false;
 
   private readonly tabs: TabMeta[] = [
     { icon: 'home', iconOn: 'homeFill', label: '成长总览', key: 'home' } as TabMeta,
@@ -132,21 +127,6 @@ struct Index {
     if (p) { this.applyDeepLink(p); }
   }
 
-  /** 用户点了「同意并开始使用」：记下来，放开 App */
-  private async acceptPrivacy(): Promise<void> {
-    await Privacy.accept();
-    this.privacyOk = true;
-  }
-
-  /** 用户点了「不同意」：退出 App（应用市场要求给不同意的人一条出路） */
-  private exitApp(): void {
-    try {
-      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      ctx.terminateSelf();
-    } catch (e) {
-      hilog.error(DOMAIN, 'workbench', 'terminateSelf failed: %{public}s', JSON.stringify(e));
-    }
-  }
 
   /** 开库失败后重试 */
   private retryBoot(): void {
@@ -421,28 +401,6 @@ struct Index {
           .height('100%')
           .justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
-        } else if (!this.privacyOk) {
-          // v4.7：隐私门 —— 没同意之前不渲染任何业务内容，只留一张安静的启动页
-          Column() {
-            Blank()
-            Row() {
-              SymbolGlyph(sym('tasksFill')).fontSize(22).fontColor([onFill(this.dark)])
-            }
-            .width(54).height(54).borderRadius(17)
-            .justifyContent(FlexAlign.Center)
-            .alignItems(VerticalAlign.Center)
-            .linearGradient({ angle: 140, colors: [['#1C7C74', 0], ['#1B7799', 1]] })
-            Text('小记')
-              .fontSize(17).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).margin({ top: 14 })
-            Text('安排好行动，让生活慢慢生长。')
-              .fontSize(10.5).fontColor(tk(this.dark, 'textSub')).margin({ top: 6 })
-            Blank()
-          }
-          .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.Center)
-          .alignItems(HorizontalAlign.Center)
-          .backgroundColor(tk(this.dark, 'bg'))
         } else if (this.subPage.length > 0) {
           Column() {
             Column() {
@@ -473,7 +431,7 @@ struct Index {
       .alignItems(VerticalAlign.Top)
 
       // 右下角悬浮记录按钮（弹窗打开时隐藏，对齐 body:has(.modal) .capture-fab{display:none}）
-      if (this.ready && this.privacyOk && !this.showQuick && !this.showMore && this.subPage.length === 0 && !this.dragging && !this.scrolling && !this.fabHide && !this.hideTabBar) {
+      if (this.ready && !this.showQuick && !this.showMore && this.subPage.length === 0 && !this.dragging && !this.scrolling && !this.fabHide && !this.hideTabBar) {
         Column() {
           this.captureFab()
         }
@@ -487,7 +445,7 @@ struct Index {
       }
 
       // 底部导航（只有窄屏才有；宽屏用左侧导航栏）
-      if (this.ready && this.privacyOk && !this.hideTabBar && !this.wideMode()) {
+      if (this.ready && !this.hideTabBar && !this.wideMode()) {
         this.bottomBar()
       }
 
@@ -525,25 +483,9 @@ struct Index {
         .zIndex(95)
       }
 
-      // v4.7：隐私门 —— 同意之前只显示隐私弹窗；
-      // 点《用户协议》《隐私政策》时，协议页盖在弹窗上面（zIndex 更高）。
-      if (this.privacyReady && !this.privacyOk) {
-        PrivacyDialog({
-          visible: true,
-          onAgree: () => { this.acceptPrivacy(); },
-          onDisagree: () => { this.exitApp(); },
-          onViewPolicy: () => { this.go('policy'); }
-        })
-          .width('100%')
-          .height('100%')
-          .zIndex(90)
-      }
-      if (this.privacyReady && !this.privacyOk && this.subPage === 'policy') {
-        PolicyView({ onNavigate: (p: string) => { this.go(p); } })
-          .width('100%')
-          .height('100%')
-          .zIndex(96)
-      }
+      // v4.25：首启隐私弹窗已删除 —— 平台「标准化隐私声明托管服务」会弹系统的那个，
+      // 我们再自建一个就会弹两次（AGC 审核不通过）。App 内仍保留
+      // 《用户协议与隐私政策》的查看入口（设置页 → 查看用户协议与隐私政策）。
 
       // v4.24：边界提示胶囊（滑出边界时弹一下「已经到顶了 / 已经到底了」）
       // 放在根 Stack 的最后一层 = 最上面；自己不拦截触摸。
@@ -558,7 +500,8 @@ struct Index {
     .backgroundColor(tk(this.dark, 'bg'))
     // v4.6：量窗口宽度 → 定布局档位（折叠屏展开、平板横竖屏都会触发）
     .onAreaChange((oldA: Area, newA: Area) => {
-      R.update(this.numOf(newA.width));
+      // v4.25：把窗口高度也报上去（弹层高度要按窗口算，见 utils/Responsive.ets 的 KEY_WH）
+      R.update(this.numOf(newA.width), this.numOf(newA.height));
     })
   }
 }

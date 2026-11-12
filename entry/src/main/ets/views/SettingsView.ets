@@ -37,6 +37,17 @@ export struct SettingsView {
   // 导入/清空之后数字不会自己变，所以改成同步一份到 @State。
   @State habits: HabitView[] = [];
   @State userName: string = '';
+  // v4.25：这几页的「多少条」不能直接写 `${this.tasks.length}`。
+  //   ArkUI V1 不会因为「@State 数组换了个新引用」就重画那个只读了 .length 的节点 ——
+  //   内存里 this.tasks 已经是空数组了，界面还显示着旧的数字（AGC 审核在 Mate 80 Pro 上
+  //   报的「清空数据后设置页没更新」就是这个）。
+  //   ⇒ 派生数字先算进 @State（跟 v4.2 任务面板的三列计数同一个套路），界面直接读数字。
+  @State nTasks: number = 0;
+  @State nEvents: number = 0;
+  @State nNotes: number = 0;
+  @State nReviews: number = 0;
+  @State nProjects: number = 0;
+  @State nHabits: number = 0;
   // 版本号从系统读，改了 app.json5 不用再改这里
   @State appVersion: string = 'v1.0.0';
   @State busy: boolean = false;
@@ -60,6 +71,12 @@ export struct SettingsView {
     this.events = Store.I.events;
     this.projects = Store.I.projects;
     this.habits = Store.I.habits;
+    this.nTasks = this.tasks.length;
+    this.nEvents = this.events.length;
+    this.nNotes = this.notes.length;
+    this.nReviews = this.reviews.length;
+    this.nProjects = this.projects.length;
+    this.nHabits = this.habits.length;
   }
   onNavigate: (page: string) => void = () => {};
 
@@ -215,9 +232,20 @@ export struct SettingsView {
       .onClick(cb)
   }
 
-  @Builder statBox(label: string, value: string, sub: string) {
+  /**
+   * 概览三格。
+   *
+   * v4.25：数字必须在 **builder 内部直接读 state**，不能当参数从外面传进来。
+   *   ArkUI V1 里 @Builder 的参数是「按值传」——父组件 build() 时算好一次就冻住了；
+   *   把 `${this.nTasks}` 这种「读 state 算出来的值」当参数传，
+   *   builder 自己并不会因此产生对 state 的依赖 ⇒ state 变了它也不重画
+   *   （AGC 审核报的「清空数据后设置页数字没变」就是这个）。
+   *   ⇒ 传「是哪一类」，在 builder 里直接读对应的 @State 数字（跟 TasksView 的 tstat 同一个套路）。
+   */
+  @Builder statBox(kind: string, label: string, sub: string) {
     Column({ space: 2 }) {
-      Text(value).fontSize(20).fontWeight(FontWeight.Bold).fontColor(tc(this.dark, '#2E4A5E', 1)).letterSpacing(-0.5)
+      Text(kind === 'tasks' ? `${this.nTasks}` : (kind === 'notes' ? `${this.nNotes}` : `${this.nReviews}`))
+        .fontSize(20).fontWeight(FontWeight.Bold).fontColor(tc(this.dark, '#2E4A5E', 1)).letterSpacing(-0.5)
       Text(label).fontSize(9.5).fontColor(tc(this.dark, '#9FB2C2', 1))
       Text(sub).fontSize(8.5).fontColor(tc(this.dark, '#B6C7D4', 1))
     }
@@ -258,9 +286,9 @@ export struct SettingsView {
 
         // 概览
         Row({ space: 9 }) {
-          this.statBox('任务', `${this.tasks.length}`, '件')
-          this.statBox('记录', `${this.notes.length}`, '条')
-          this.statBox('复盘', `${this.reviews.length}`, '篇')
+          this.statBox('tasks', '任务', '件')
+          this.statBox('notes', '记录', '条')
+          this.statBox('reviews', '复盘', '篇')
         }
         .width('100%')
         .margin({ bottom: 12 })
@@ -289,15 +317,15 @@ export struct SettingsView {
 
             // 各类内容条数
             Row() {
-              this.miniStat('任务', this.tasks.length)
-              this.miniStat('日程', this.events.length)
-              this.miniStat('记录', this.notes.length)
+              this.miniStat('tasks', '任务')
+              this.miniStat('events', '日程')
+              this.miniStat('notes', '记录')
             }
             .width('100%')
             Row() {
-              this.miniStat('项目', this.projects.length)
-              this.miniStat('复盘', this.reviews.length)
-              this.miniStat('习惯', this.habits.length)
+              this.miniStat('projects', '项目')
+              this.miniStat('reviews', '复盘')
+              this.miniStat('habits', '习惯')
             }
             .width('100%')
           }
@@ -493,10 +521,16 @@ export struct SettingsView {
     .edgeEffect(EdgeEffect.Spring)
   }
 
+  /** 本地数据卡里的六格小计数（同样：数字在 builder 内部直接读） */
   @Builder
-  miniStat(label: string, n: number) {
+  miniStat(kind: string, label: string) {
     Column({ space: 1 }) {
-      Text(`${n}`).fontSize(15).fontWeight(FontWeight.Bold).fontColor(tc(this.dark, '#2E4A5E', 1))
+      Text(kind === 'tasks' ? `${this.nTasks}` :
+        (kind === 'events' ? `${this.nEvents}` :
+          (kind === 'notes' ? `${this.nNotes}` :
+            (kind === 'projects' ? `${this.nProjects}` :
+              (kind === 'reviews' ? `${this.nReviews}` : `${this.nHabits}`)))))
+        .fontSize(15).fontWeight(FontWeight.Bold).fontColor(tc(this.dark, '#2E4A5E', 1))
       Text(label).fontSize(9).fontColor(tc(this.dark, '#9FB2C2', 1))
     }
     .layoutWeight(1)

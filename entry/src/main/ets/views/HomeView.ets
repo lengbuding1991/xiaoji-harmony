@@ -54,6 +54,37 @@ export struct HomeView {
   @State loaded: boolean = false;
   @State refreshing: boolean = false;
   @State showAdd: boolean = false;
+  // v4.26（平板竖屏）：宽屏的弹层不再用 bindSheet。
+  //   bindSheet 的面板高度是平台按「内容高度」算的（平板竖屏实测只有 560vp），
+  //   卡片会被裁掉底部「保存/取消」，自己画的遮罩也只能盖住面板那一块。
+  //   ⇒ 宽屏改成在页面里自己铺一层遮罩 + 居中卡片（wideOverlay），窄屏仍是底部抽屉。
+  @State wideOpen: boolean = false;
+
+  /** v4.26：宽屏走页面内浮层，窄屏走 bindSheet 底部抽屉 */
+  private openSheet(): void {
+    if (this.wideMode()) {
+      this.wideOpen = true;
+      // 浮层盖住内容区时，右下角的悬浮按钮（在页面层）会浮到遮罩上面，先藏掉
+      AppStorage.setOrCreate<boolean>('wb_fab_hide', true);
+    } else {
+      this.showAdd = true;
+    }
+  }
+
+  private closeSheet(): void {
+    this.showAdd = false;
+    this.wideOpen = false;
+    AppStorage.setOrCreate<boolean>('wb_fab_hide', false);
+  }
+
+  /** v4.26：宽屏时铺在页面最上层的遮罩 + 居中卡片 */
+  @Builder
+  wideOverlay() {
+    if (this.wideMode() && this.wideOpen) {
+      this.addSheet()
+    }
+  }
+
   @State trendRange: number = 0;     // 0=本周 1=上周
   @State investRange: number = 0;    // 0=本周 1=本月
   @State weekOffset: number = 0;
@@ -779,17 +810,27 @@ export struct HomeView {
     return R.cols();
   }
 
-  /** 宽的板块占 2 列（网页端 .span2），窄屏/双列时占满整行 */
+  /**
+   * 宽的板块占 2 列（网页端 .span2）。
+   *
+   * v4.26：2 列时**不再**让宽卡独占整行。
+   *   原因：ArkUI 的 GridRow 不会像 CSS grid 那样自动补位 ——
+   *   2 列里排 [2,1,2,1,…]，宽卡占满一行后，后面那张窄卡只能自己占半行，
+   *   右边空出半行（平板竖屏下实测空了 346vp），最后一张卡还被挤到屏幕外。
+   *   ⇒ 2 列时所有卡都占 1 列（两两成对），跟网页端 ≤820px 的单列效果一致，
+   *   不会有空洞；3 列时仍按 .span2 走。
+   */
   private spanFor(weight: number): number {
     const c: number = R.cols();
-    if (weight >= 2) {
-      return c >= 3 ? 2 : c;
+    if (weight >= 2 && c >= 3) {
+      return 2;
     }
     return 1;
   }
 
+  /** 3 列 / 2 列时都做「同行等高」（网页端 .home-grid 的 align-items:stretch） */
   private gridWide(): boolean {
-    return R.cols() >= 3;
+    return R.cols() >= 2;
   }
 
   /** 宽屏用 layoutWeight 分配宽度（2:1），窄屏返回 0 表示按百分比宽度走 */
@@ -999,7 +1040,7 @@ export struct HomeView {
   @Builder pageTop() {
     TopBar({
       primaryText: '添加任务',
-      onPrimary: () => { this.showAdd = true; },
+      onPrimary: () => { this.openSheet(); },
       onSearch: () => { this.onNavigate('search'); },
       onCalendar: () => { this.onNavigate('calendar'); }
     })
@@ -1058,583 +1099,618 @@ export struct HomeView {
   }
 
   build() {
-    Refresh({ refreshing: $$this.refreshing }) {
-      Scroll() {
-        if (!this.loaded) {
-          this.skeleton()
-        } else {
-          Column({ space: 0 }) {
-            Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+    Stack() {
 
-            this.pageTop()
+      Refresh({ refreshing: $$this.refreshing }) {
+        Scroll() {
+          if (!this.loaded) {
+            this.skeleton()
+          } else {
+            Column({ space: 0 }) {
+              Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
 
-            // ① hello：eyebrow + h1 + 副文案（v4.2：右上角显示设置里的「称呼」）
-            Column({ space: 6 }) {
-              Row({ space: 6 }) {
-                Text(`${D.dotDate(new Date())} · ${D.weekdayFull(new Date())}`)
-                  .fontSize(9)
-                  .fontColor(tc(this.dark, '#9DB0C1', 1))
-                  .letterSpacing(1.6)
-                Blank()
-                if (this.kUserName.length > 0) {
-                  Row({ space: 4 }) {
-                    SymbolGlyph(sym('person')).fontSize(14).fontColor([tkInk(this.dark, 'brandDeep')])
-                    Text(this.kUserName)
-                      .fontSize(9.5)
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor(tkInk(this.dark, 'brandDeep'))
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  }
-                  .padding({ left: 8, right: 9, top: 3, bottom: 3 })
-                  .borderRadius(999)
-                  .backgroundColor(tk(this.dark, 'brandSoft'))
-                  .alignItems(VerticalAlign.Center)
-                }
-              }
-              .width('100%')
-              .alignItems(VerticalAlign.Center)
-              Text(this.kHeaderTitle)
-                .fontSize(S.titleSize)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(tk(this.dark, 'text'))
-                .letterSpacing(-0.6)
-                .lineHeight(32)
-              Text(this.kHeaderSub)
-                .fontSize(11)
-                .fontColor(tk(this.dark, 'textSub'))
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-            .padding({ top: 14, bottom: 16 })
+              this.pageTop()
 
-            // v3.0：全部内容入口（任务 / 灵感 / 日程 / 项目 / 复盘 / 习惯，一处看全）
-            Row({ space: 6 }) {
-              SymbolGlyph(sym('grid')).fontSize(14).fontColor([tkInk(this.dark, 'brandDeep')])
-              Text('全部内容').fontSize(10.5).fontWeight(FontWeight.Medium).fontColor(tkInk(this.dark, 'brandDeep'))
-              Text('所有东西，一处看全').fontSize(9.5).fontColor(tk(this.dark, 'textHint'))
-              // v4.23：fs14 墨迹 11.7x10.6vp（盒子 14x14 >= 12vp、墨迹 >= 8vp）
-              SymbolGlyph(sym('right')).fontSize(14).fontColor([tk(this.dark, 'textHint')])
-            }
-            .padding({ left: 11, right: 11, top: 7, bottom: 7 })
-            .margin({ bottom: 14 })
-            .borderRadius(999)
-            .backgroundColor(tk(this.dark, 'brandSoft'))
-            .border({ width: 1, color: tk(this.dark, 'brandLine') })
-            .alignItems(VerticalAlign.Center)
-            .onClick(() => { this.onNavigate('all'); })
-
-            // ② 5 个 KPI（手机端两列、第 5 个占满；平板一行 5 个，照网页端 .kpis）
-            if (this.contentW >= 900) {
-              Row({ space: 8 }) {
-                this.kpiToday()
-                this.kpiRate()
-                this.kpiStreak()
-                this.kpiFocus()
-                this.kpiPoints()
-              }
-              .width('100%')
-            } else {
-              Row({ space: 8 }) {
-                this.kpiToday()
-                this.kpiRate()
-              }
-              .width('100%')
-
-              Row({ space: 8 }) {
-                this.kpiStreak()
-                this.kpiFocus()
-              }
-              .width('100%')
-              .margin({ top: 8 })
-
-              Row({ space: 8 }) {
-                this.kpiPoints()
-              }
-              .width('100%')
-              .margin({ top: 8 })
-            }
-
-            // v4.12：说清楚「习惯打卡」是什么；上下都留出间距，别贴着下面的卡
-            Text('「习惯打卡」= 现在还连着的最长天数（今天还没打卡不打断）；历史最长写在副标题里')
-              .fontSize(9)
-              .fontColor(tk(this.dark, 'textFaint'))
-              .width('100%')
-              .margin({ top: 10, bottom: 14 })
-
-            // v4.6：宽屏时 ③–⑩ 照网页端 .home-grid 排版：
-            // 一行两块 —— 宽的（趋势 / 最近任务 / 核心模块 / 灵感派）占 2 列，
-            // 窄的（投入占比 / 成长日历 / 本周小结 / 今日一句）占 1 列；
-            // 同一行的两块拉齐高度，不留参差不齐的空当（手机上仍是单列顺序排）。
-            Column() {
-            GridRow({ columns: this.gridCols(), gutter: { x: 14, y: 14 } }) {
-            // ③ 本周成长趋势
-            GridCol({ span: this.spanFor(2) }) {
-              Column() {
-                Card({
-                    fixedHeight: this.gridWide() ? this.rowH[0] : 0,
-                    onContentHeight: (h: number) => { this.setContentH(0, h); },
-                    title: '本周成长趋势', sub: '每天专注时长',
-                  headMode: this.trendRange === 0 ? 'text' : 'text',
-                  headText: this.trendRange === 0 ? '上周 ›' : '本周 ›',
-                  onHead: () => { this.trendRange = this.trendRange === 0 ? 1 : 0; this.recalc(); }
-                }) {
-                  Column({ space: 2 }) {
-                    Row({ space: 6 }) {
-                      Text(`${this.kTrendSum}h`).fontSize(22).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text'))
-                      Text(this.trendRange === 1 ? '上周累计专注' : '本周累计专注').fontSize(S.tinySize).fontColor(tk(this.dark, 'textFaint'))
-                      Blank()
+              // ① hello：eyebrow + h1 + 副文案（v4.2：右上角显示设置里的「称呼」）
+              Column({ space: 6 }) {
+                Row({ space: 6 }) {
+                  Text(`${D.dotDate(new Date())} · ${D.weekdayFull(new Date())}`)
+                    .fontSize(9)
+                    .fontColor(tc(this.dark, '#9DB0C1', 1))
+                    .letterSpacing(1.6)
+                  Blank()
+                  if (this.kUserName.length > 0) {
+                    Row({ space: 4 }) {
+                      SymbolGlyph(sym('person')).fontSize(14).fontColor([tkInk(this.dark, 'brandDeep')])
+                      Text(this.kUserName)
+                        .fontSize(9.5)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor(tkInk(this.dark, 'brandDeep'))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
                     }
-                    .width('100%')
-                    .alignItems(VerticalAlign.Bottom)
-                    LineChart({ values: this.kTrendValues, labels: this.kTrendLabels, chartHeight: 150,
-                    onBubble: (bx: number, by: number, bw: number, bh: number) => { this.bubbleLocal = [bx, by, bw, bh]; } })
-                  .onAreaChange((oldA: Area, newA: Area) => { this.chartArea(oldA, newA); })
-                    Row({ space: 10 }) {
-                      Row({ space: 4 }) {
-                        Row().width(6).height(6).borderRadius(3).backgroundColor(tk(this.dark, 'brand'))
-                        Text('专注时长（小时）').fontSize(S.microSize + 0.5).fontColor(tk(this.dark, 'textHint'))
-                      }
-                      Text('按任务完成日统计').fontSize(S.microSize + 0.5).fontColor(tk(this.dark, 'textHint'))
-                    }
-                    .width('100%')
-                    .margin({ top: 4 })
-                  }
-                  .width('100%')
-                }
-
-              }
-            }
-
-            // ④ 模块投入占比
-            GridCol({ span: this.spanFor(1) }) {
-              Column() {
-                Card({
-                    fixedHeight: this.gridWide() ? this.rowH[0] : 0,
-                    onContentHeight: (h: number) => { this.setContentH(1, h); },
-                    title: '模块投入占比',
-                  headMode: 'text',
-                  headText: this.investRange === 0 ? '本月 ›' : '本周 ›',
-                  onHead: () => { this.investRange = this.investRange === 0 ? 1 : 0; this.recalc(); }
-                }) {
-                  Column({ space: 10 }) {
-                    Column() {
-                      Donut({ pieces: this.kInvestPieces, centerBig: this.kInvestTotal, centerSmall: this.investRange === 1 ? '本月总投入' : '本周总投入' })
-                    }
-                    .width('100%')
-                    .alignItems(HorizontalAlign.Center)
-
-                    DonutLegend({ pieces: this.kInvestPieces })
-
-                    Divider().color('#EAF2F9').strokeWidth(1).margin({ top: 2 })
-
-                    Row({ space: 3 }) {
-                      ForEach(this.kInvestItems, (i: InvestItem) => {
-                        Row()
-                          .layoutWeight(Math.max(i.pct, 2))
-                          .height(5)
-                          .backgroundColor(i.hex)
-                      }, (i: InvestItem) => `dfb-${i.area}`)
-                    }
-                    .width('100%')
-                    .height(5)
-                    .borderRadius(99)
-
-                    Text(this.kInvestItems.length > 0 && this.kInvestItems[0].pct > 0
-                      ? `这周你在 ${this.kInvestItems[0].label} 上花的时间最多，占 ${this.kInvestItems[0].pct}%。`
-                      : '本周还没有排期，先给一件事留个时间块。')
-                      .fontSize(S.subSize)
-                      .fontColor(tc(this.dark, '#6E8497', 1))
-                      .lineHeight(18)
-                      .width('100%')
-                  }
-                  .width('100%')
-                }
-
-              }
-            }
-
-
-            // ⑤ 最近任务
-            GridCol({ span: this.spanFor(2) }) {
-              Column() {
-                Card({
-                  fixedHeight: this.gridWide() ? this.rowH[1] : 0,
-                    onContentHeight: (h: number) => { this.setContentH(2, h); },
-                  title: '最近任务', headMode: 'text', headText: '查看全部 ›', onHead: () => { this.onNavigate('tasks'); } }) {
-                  Column({ space: 2 }) {
-                    if (this.kRecentCount === 0) {
-                      Column({ space: 5 }) {
-                        // v4.4：一条任务都没有 vs 全部做完了，是两回事，别都写「还没有任务」
-                        Text(this.kTotalTasks === 0 ? '还没有任务' : '都做完了')
-                          .fontSize(S.bodySize).fontWeight(FontWeight.Medium).fontColor(tk(this.dark, 'textFaint'))
-                        Text(this.kTotalTasks === 0 ? '先加一件今天想做的事。' : '所有任务都完成了，休息一下。')
-                          .fontSize(S.subSize).fontColor(tk(this.dark, 'textPale'))
-                      }
-                      .width('100%')
-                      .padding({ top: 18, bottom: 18 })
-                      .alignItems(HorizontalAlign.Center)
-                    } else {
-                      ForEach(this.kRecent, (t: Task) => {
-                        this.taskRow(t)
-                      }, (t: Task) => `rc-${t.id}-${this.tick}`)
-                    }
-
-                    Divider().color('#EAF2F9').strokeWidth(1).margin({ top: 8 })
-
-                    Row({ space: 6 }) {
-                      Text(`还有 ${this.kOpenAll} 件待处理`).fontSize(10).fontColor(tk(this.dark, 'textFaint'))
-                      Blank()
-                      Text('去任务面板 →')
-                        .fontSize(10)
-                        .fontColor(tc(this.dark, '#5E7183', 1))
-                        .padding({ left: 9, right: 9, top: 3, bottom: 3 })
-                        .borderRadius(9)
-                        .backgroundColor(tk(this.dark, 'card'))
-                        .border({ width: 1, color: tk(this.dark, 'line') })
-                        .onClick(() => { this.onNavigate('tasks'); })
-                    }
-                    .width('100%')
-                    .margin({ top: 8 })
+                    .padding({ left: 8, right: 9, top: 3, bottom: 3 })
+                    .borderRadius(999)
+                    .backgroundColor(tk(this.dark, 'brandSoft'))
                     .alignItems(VerticalAlign.Center)
                   }
-                  .width('100%')
                 }
-
+                .width('100%')
+                .alignItems(VerticalAlign.Center)
+                Text(this.kHeaderTitle)
+                  .fontSize(S.titleSize)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(tk(this.dark, 'text'))
+                  .letterSpacing(-0.6)
+                  .lineHeight(32)
+                Text(this.kHeaderSub)
+                  .fontSize(11)
+                  .fontColor(tk(this.dark, 'textSub'))
               }
-            }
+              .width('100%')
+              .alignItems(HorizontalAlign.Start)
+              .padding({ top: 14, bottom: 16 })
 
-            // ⑥ 本月成长日历
-            GridCol({ span: this.spanFor(1) }) {
-              Column() {
-                Card({
-                    fixedHeight: this.gridWide() ? this.rowH[1] : 0,
-                    onContentHeight: (h: number) => { this.setContentH(3, h); },
-                    title: '本月成长日历', headMode: 'arrows',
-                  onPrev: () => { this.calOffset -= 1; this.recalc(); },
-                  onNext: () => { this.calOffset += 1; this.recalc(); }
-                }) {
-                  MonthCal({ cells: this.kCalCells, monthLabel: this.kCalLabel, doneCount: this.kCalDone })
-                }
-
+              // v3.0：全部内容入口（任务 / 灵感 / 日程 / 项目 / 复盘 / 习惯，一处看全）
+              Row({ space: 6 }) {
+                SymbolGlyph(sym('grid')).fontSize(14).fontColor([tkInk(this.dark, 'brandDeep')])
+                Text('全部内容').fontSize(10.5).fontWeight(FontWeight.Medium).fontColor(tkInk(this.dark, 'brandDeep'))
+                Text('所有东西，一处看全').fontSize(9.5).fontColor(tk(this.dark, 'textHint'))
+                // v4.23：fs14 墨迹 11.7x10.6vp（盒子 14x14 >= 12vp、墨迹 >= 8vp）
+                SymbolGlyph(sym('right')).fontSize(14).fontColor([tk(this.dark, 'textHint')])
               }
-            }
+              .padding({ left: 11, right: 11, top: 7, bottom: 7 })
+              .margin({ bottom: 14 })
+              .borderRadius(999)
+              .backgroundColor(tk(this.dark, 'brandSoft'))
+              .border({ width: 1, color: tk(this.dark, 'brandLine') })
+              .alignItems(VerticalAlign.Center)
+              .onClick(() => { this.onNavigate('all'); })
 
-
-            // ⑦ 核心模块
-            GridCol({ span: this.spanFor(2) }) {
-              Column() {
-                Card({
-                  fixedHeight: this.gridWide() ? this.rowH[2] : 0,
-                    onContentHeight: (h: number) => { this.setContentH(4, h); },
-                  title: '核心模块', headMode: 'text', headText: '进入任务面板 ›', onHead: () => { this.onNavigate('tasks'); } }) {
-                  Column({ space: 8 }) {
-                    Row({ space: 8 }) {
-                      Column() {
-                        ModTile({ icon: 'tasks', label: '任务面板', sub: '计划与打卡', onTap: () => { this.onNavigate('tasks'); } })
-                      }.layoutWeight(1)
-                      Column() {
-                        ModTile({
-                          icon: 'calendar', label: '日历安排', sub: '日程与时间块',
-                          iconBg: '#E3F8F2', iconFg: '#267261', onTap: () => { this.onNavigate('calendar'); }
-                        })
-                      }.layoutWeight(1)
-                    }.width('100%')
-                    Row({ space: 8 }) {
-                      Column() {
-                        ModTile({
-                          icon: 'note', label: '记录灵感', sub: '随手写下想法',
-                          iconBg: '#FCEAF2', iconFg: '#AA4071', onTap: () => { this.onNavigate('notes'); }
-                        })
-                      }.layoutWeight(1)
-                      Column() {
-                        ModTile({
-                          icon: 'wand', label: '每日复盘', sub: '回顾与调整',
-                          iconBg: '#F1ECFE', iconFg: '#6B4FD0', onTap: () => { this.onNavigate('review'); }
-                        })
-                      }.layoutWeight(1)
-                    }.width('100%')
-                    Row({ space: 8 }) {
-                      Column() {
-                        ModTile({
-                          icon: 'target', label: '每日习惯', sub: '连续打卡',
-                          iconBg: '#FDF4DC', iconFg: '#876312', onTap: () => { this.onNavigate('habits'); }
-                        })
-                      }.layoutWeight(1)
-                      Column() {
-                        ModTile({
-                          icon: 'grid', label: '数据洞察', sub: '趋势与投入',
-                          iconBg: '#E9F3FB', iconFg: '#356B91', onTap: () => { this.onNavigate('stats'); }
-                        })
-                      }.layoutWeight(1)
-                    }.width('100%')
-                    Row({ space: 8 }) {
-                      Column() {
-                        ModTile({
-                          icon: 'search', label: '全局搜索', sub: '找任何一条',
-                          iconBg: '#E1F7F5', iconFg: '#0F6B66', onTap: () => { this.onNavigate('search'); }
-                        })
-                      }.layoutWeight(1)
-                      Column() {
-                        ModTile({
-                          icon: 'gear', label: '偏好设置', sub: '本地与 AI',
-                          iconBg: '#F0F4F8', iconFg: '#52697E', onTap: () => { this.onNavigate('settings'); }
-                        })
-                      }.layoutWeight(1)
-                    }.width('100%')
-                  }
-                  .width('100%')
+              // ② 5 个 KPI（手机端两列、第 5 个占满；平板一行 5 个，照网页端 .kpis）
+              // v4.26：中间档（平板竖屏，导航收成 70vp 之后内容区约 858vp）走 3 + 2，
+              //   和网页端 @media(max-width:1180px) 的 .kpis{repeat(3,1fr)} 对齐，
+              //   两张卡各占半行（layoutWeight 分的是整行宽度），不会留空洞。
+              if (this.contentW >= 900) {
+                Row({ space: 8 }) {
+                  this.kpiToday()
+                  this.kpiRate()
+                  this.kpiStreak()
+                  this.kpiFocus()
+                  this.kpiPoints()
                 }
-
-              }
-            }
-
-            // ⑧ 本周小结
-            GridCol({ span: this.spanFor(1) }) {
-              Column() {
-                Card({
-                  fixedHeight: this.gridWide() ? this.rowH[2] : 0,
-                    onContentHeight: (h: number) => { this.setContentH(5, h); },
-                  title: '本周小结' }) {
-                  Column({ space: 10 }) {
-                    Text(this.kSummary)
-                      .fontSize(S.subSize)
-                      .fontColor(tc(this.dark, '#4E6579', 1))
-                      .lineHeight(19)
-                      .width('100%')
-                    MiniBars({ values: this.kTrendValues, chartHeight: 44 })
-                  }
-                  .width('100%')
+                .width('100%')
+              } else if (this.contentW >= 620) {
+                Row({ space: 8 }) {
+                  this.kpiToday()
+                  this.kpiRate()
+                  this.kpiStreak()
                 }
+                .width('100%')
 
-              }
-            }
-
-
-            // ⑨ 灵感派
-            GridCol({ span: this.spanFor(2) }) {
-              Column() {
-                Card({
-                    fixedHeight: this.gridWide() ? this.rowH[3] : 0,
-                    onContentHeight: (h: number) => { this.setContentH(6, h); },
-                    title: '灵感派', sub: '从记录里挑',
-                  headMode: 'text', headText: '换一批 ›',
-                  onHead: () => { this.spin += 1; this.recalc(); }
-                }) {
-                  Column({ space: 10 }) {
-                    if (this.kCandCount === 0) {
-                      Column({ space: 5 }) {
-                        Text('还没有记录').fontSize(S.bodySize).fontColor(tk(this.dark, 'textFaint'))
-                        Text('随手记下第一条灵感。').fontSize(S.subSize).fontColor(tk(this.dark, 'textPale'))
-                      }
-                      .width('100%')
-                      .padding({ top: 14, bottom: 14 })
-                      .alignItems(HorizontalAlign.Center)
-                    } else {
-                      Column() {
-                        Donut({ pieces: this.kCandPieces, boxSize: 118, holeSize: 22 })
-                      }
-                      .width(118)
-                      .height(118)
-                      .borderRadius(59)
-                      .backgroundColor(tk(this.dark, 'card'))
-                      .justifyContent(FlexAlign.Center)
-                      .onClick(() => { this.spin += 1; })
-
-                      Column({ space: 2 }) {
-                        ForEach(this.kCandItems.slice(0, 3), (c: CandItem, idx: number) => {
-                          Column({ space: 4 }) {
-                            Row({ space: 8 }) {
-                              Row() {
-                                Text(`${idx + 1}`).fontSize(8).fontColor(idx === 0 ? tkInk(this.dark, 'brandDeep') : tc(this.dark, '#8FA2B3', 1))
-                              }
-                              .width(16)
-                              .height(16)
-                              .borderRadius(8)
-                              .backgroundColor(idx === 0 ? tk(this.dark, 'brandSoft') : tc(this.dark, '#F1F7FC', 0))
-                              .justifyContent(FlexAlign.Center)
-                              .alignItems(VerticalAlign.Center)
-                              Text(c.title)
-                                .fontSize(S.subSize)
-                                .fontColor(tk(this.dark, 'text'))
-                                .maxLines(1)
-                                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                                .layoutWeight(1)
-                              Text(`${c.pct}%`).fontSize(S.microSize).fontColor(tc(this.dark, '#8FA2B3', 1))
-                            }
-                            .width('100%')
-                            .padding({ top: 5, bottom: 3 })
-                            .alignItems(VerticalAlign.Center)
-
-                            Row() {
-                              Row()
-                                .width(`${c.pct}%`)
-                                .height(4)
-                                .borderRadius(2)
-                                .backgroundColor(c.color)
-                            }
-                            .width('100%')
-                            .height(4)
-                            .borderRadius(2)
-                            .backgroundColor(tk(this.dark, 'track'))
-                          }
-                          .width('100%')
-                          .onClick(() => { this.onNavigate('notes'); })
-                        }, (c: CandItem) => `cand-${c.id}-${c.pct}-${this.tick}`)
-
-                        Text('从记下的东西里，挑一条现在就动手。')
-                          .fontSize(S.microSize + 0.5)
-                          .fontColor(tk(this.dark, 'textHint'))
-                          .margin({ top: 6 })
-                      }
-                      .width('100%')
-                    }
-                  }
-                  .width('100%')
-                  .alignItems(HorizontalAlign.Center)
+                Row({ space: 8 }) {
+                  this.kpiFocus()
+                  this.kpiPoints()
                 }
-
-              }
-            }
-
-            // ⑩ 今日一句
-            GridCol({ span: this.spanFor(1) }) {
-              Column() {
-                Card({
-                  fixedHeight: this.gridWide() ? this.rowH[3] : 0,
-                    onContentHeight: (h: number) => { this.setContentH(7, h); },
-                  title: '今日一句', headMode: 'text', headText: '全部 ›', onHead: () => { this.onNavigate('notes'); } }) {
-                  Column({ space: 9 }) {
-                    Row({ space: 8 }) {
-                      SymbolGlyph(sym('quote')).fontSize(14).fontColor([tc(this.dark, '#B9CAD8', 1)])
-                      Column({ space: 4 }) {
-                        Text('每一个微小的坚持，都在让你靠近更喜欢的自己。')
-                          .fontSize(S.bodySize)
-                          .fontColor(tc(this.dark, '#4E6579', 1))
-                          .lineHeight(21)
-                          .width('100%')
-                        if (this.kQuote.length > 0) {
-                          Text(`最近记下：${this.kQuote}`)
-                            .fontSize(S.tinySize)
-                            .fontColor(tk(this.dark, 'textHint'))
-                            .width('100%')
-                        }
-                      }
-                      .alignItems(HorizontalAlign.Start)
-                      .layoutWeight(1)
-                    }
-                    .width('100%')
-                    .alignItems(VerticalAlign.Top)
-
-                    if (this.notes.length > 0) {
-                      Column({ space: 6 }) {
-                        ForEach(this.notes.slice(0, 3), (n: Note) => {
-                          Row({ space: 7 }) {
-                            Row().width(6).height(6).borderRadius(3).backgroundColor(tk(this.dark, 'brand'))
-                            Text(n.title.length > 0 ? n.title : n.content.substring(0, 16))
-                              .fontSize(S.subSize)
-                              .fontColor(tc(this.dark, '#4E6579', 1))
-                              .maxLines(1)
-                              .textOverflow({ overflow: TextOverflow.Ellipsis })
-                              .layoutWeight(1)
-                            Text(D.short(D.dateOf(n.updated_at))).fontSize(S.microSize).fontColor(tk(this.dark, 'textHint'))
-                          }
-                          .width('100%')
-                          .alignItems(VerticalAlign.Center)
-                          .onClick(() => { this.onNavigate('notes'); })
-                        }, (n: Note) => `qn-${n.id}-${this.tick}`)
-                      }
-                      .width('100%')
-                    }
-
-                    Divider().color('#EAF2F9').strokeWidth(1)
-                    Row({ space: 6 }) {
-                      Text('共 ').fontSize(10).fontColor(tk(this.dark, 'textFaint'))
-                      Text(`${this.notes.length}`).fontSize(10).fontColor(tc(this.dark, '#4E6579', 1)).fontWeight(FontWeight.Medium)
-                      Text(' 条记录').fontSize(10).fontColor(tk(this.dark, 'textFaint'))
-                      Blank()
-                    }
-                    .width('100%')
-                  }
-                  .width('100%')
+                .width('100%')
+                .margin({ top: 8 })
+              } else {
+                Row({ space: 8 }) {
+                  this.kpiToday()
+                  this.kpiRate()
                 }
+                .width('100%')
 
-              }
-            }
-            }
-            .alignItems(ItemAlign.Start)
-            .width('100%')
-            }
-            .width('100%')
-
-            // ⑪ 本周安排（v2.9：接入日历日程；日期可点，看那天的安排）
-            SecHead({
-              title: '本周安排', count: `${this.kWeekArrCount} 件安排`, rightMode: 'arrows',
-              onPrev: () => { this.weekOffset -= 1; this.dayPick = -1; this.recalc(); },
-              onNext: () => { this.weekOffset += 1; this.dayPick = -1; this.recalc(); }
-            })
-
-            Column() {
-              Card({ title: '给灵感留一点时间', sub: this.kWeekRange }) {
-                WeekGantt({
-                  dayNums: this.kWeekDayNums,
-                  todayIdx: this.kTodayIdx,
-                  bars: this.kWeekBars,
-                  selectedIdx: this.dayPick,
-                  onDayTap: (i: number) => {
-              this.dayPick = this.dayPick === i ? -1 : i;
-              this.recalc();
-            }
-                })
-
-                if (this.dayPick >= 0) {
-                  this.dayPanel()
-                } else {
-                  this.weekPanel()
+                Row({ space: 8 }) {
+                  this.kpiStreak()
+                  this.kpiFocus()
                 }
+                .width('100%')
+                .margin({ top: 8 })
 
-                Row({ space: 10 }) {
-                  ForEach(['work', 'side', 'media', 'study', 'life'], (a: string) => {
-                    Row({ space: 4 }) {
-                      Row().width(6).height(6).borderRadius(2).backgroundColor(areaColor(this.dark, a))
-                      Text(areaLabel(a)).fontSize(S.microSize).fontColor(tk(this.dark, 'textHint'))
-                    }
-                  }, (a: string) => `wf-${a}`)
+                Row({ space: 8 }) {
+                  this.kpiPoints()
                 }
                 .width('100%')
                 .margin({ top: 8 })
               }
+
+              // v4.12：说清楚「习惯打卡」是什么；上下都留出间距，别贴着下面的卡
+              Text('「习惯打卡」= 现在还连着的最长天数（今天还没打卡不打断）；历史最长写在副标题里')
+                .fontSize(9)
+                .fontColor(tk(this.dark, 'textFaint'))
+                .width('100%')
+                .margin({ top: 10, bottom: 14 })
+
+              // v4.6：宽屏时 ③–⑩ 照网页端 .home-grid 排版：
+              // 一行两块 —— 宽的（趋势 / 最近任务 / 核心模块 / 灵感派）占 2 列，
+              // 窄的（投入占比 / 成长日历 / 本周小结 / 今日一句）占 1 列；
+              // 同一行的两块拉齐高度，不留参差不齐的空当（手机上仍是单列顺序排）。
+              Column() {
+              GridRow({ columns: this.gridCols(), gutter: { x: 14, y: 14 } }) {
+              // ③ 本周成长趋势
+              GridCol({ span: this.spanFor(2) }) {
+                Column() {
+                  Card({
+                      fixedHeight: this.gridWide() ? this.rowH[0] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(0, h); },
+                      title: '本周成长趋势', sub: '每天专注时长',
+                    headMode: this.trendRange === 0 ? 'text' : 'text',
+                    headText: this.trendRange === 0 ? '上周 ›' : '本周 ›',
+                    onHead: () => { this.trendRange = this.trendRange === 0 ? 1 : 0; this.recalc(); }
+                  }) {
+                    Column({ space: 2 }) {
+                      Row({ space: 6 }) {
+                        Text(`${this.kTrendSum}h`).fontSize(22).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text'))
+                        Text(this.trendRange === 1 ? '上周累计专注' : '本周累计专注').fontSize(S.tinySize).fontColor(tk(this.dark, 'textFaint'))
+                        Blank()
+                      }
+                      .width('100%')
+                      .alignItems(VerticalAlign.Bottom)
+                      LineChart({ values: this.kTrendValues, labels: this.kTrendLabels, chartHeight: 150,
+                      onBubble: (bx: number, by: number, bw: number, bh: number) => { this.bubbleLocal = [bx, by, bw, bh]; } })
+                    .onAreaChange((oldA: Area, newA: Area) => { this.chartArea(oldA, newA); })
+                      Row({ space: 10 }) {
+                        Row({ space: 4 }) {
+                          Row().width(6).height(6).borderRadius(3).backgroundColor(tk(this.dark, 'brand'))
+                          Text('专注时长（小时）').fontSize(S.microSize + 0.5).fontColor(tk(this.dark, 'textHint'))
+                        }
+                        Text('按任务完成日统计').fontSize(S.microSize + 0.5).fontColor(tk(this.dark, 'textHint'))
+                      }
+                      .width('100%')
+                      .margin({ top: 4 })
+                    }
+                    .width('100%')
+                  }
+
+                }
+              }
+
+              // ④ 模块投入占比
+              GridCol({ span: this.spanFor(1) }) {
+                Column() {
+                  Card({
+                      fixedHeight: this.gridWide() ? this.rowH[0] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(1, h); },
+                      title: '模块投入占比',
+                    headMode: 'text',
+                    headText: this.investRange === 0 ? '本月 ›' : '本周 ›',
+                    onHead: () => { this.investRange = this.investRange === 0 ? 1 : 0; this.recalc(); }
+                  }) {
+                    Column({ space: 10 }) {
+                      Column() {
+                        Donut({ pieces: this.kInvestPieces, centerBig: this.kInvestTotal, centerSmall: this.investRange === 1 ? '本月总投入' : '本周总投入' })
+                      }
+                      .width('100%')
+                      .alignItems(HorizontalAlign.Center)
+
+                      DonutLegend({ pieces: this.kInvestPieces })
+
+                      Divider().color('#EAF2F9').strokeWidth(1).margin({ top: 2 })
+
+                      Row({ space: 3 }) {
+                        ForEach(this.kInvestItems, (i: InvestItem) => {
+                          Row()
+                            .layoutWeight(Math.max(i.pct, 2))
+                            .height(5)
+                            .backgroundColor(i.hex)
+                        }, (i: InvestItem) => `dfb-${i.area}`)
+                      }
+                      .width('100%')
+                      .height(5)
+                      .borderRadius(99)
+
+                      Text(this.kInvestItems.length > 0 && this.kInvestItems[0].pct > 0
+                        ? `这周你在 ${this.kInvestItems[0].label} 上花的时间最多，占 ${this.kInvestItems[0].pct}%。`
+                        : '本周还没有排期，先给一件事留个时间块。')
+                        .fontSize(S.subSize)
+                        .fontColor(tc(this.dark, '#6E8497', 1))
+                        .lineHeight(18)
+                        .width('100%')
+                    }
+                    .width('100%')
+                  }
+
+                }
+              }
+
+
+              // ⑤ 最近任务
+              GridCol({ span: this.spanFor(2) }) {
+                Column() {
+                  Card({
+                    fixedHeight: this.gridWide() ? this.rowH[1] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(2, h); },
+                    title: '最近任务', headMode: 'text', headText: '查看全部 ›', onHead: () => { this.onNavigate('tasks'); } }) {
+                    Column({ space: 2 }) {
+                      if (this.kRecentCount === 0) {
+                        Column({ space: 5 }) {
+                          // v4.4：一条任务都没有 vs 全部做完了，是两回事，别都写「还没有任务」
+                          Text(this.kTotalTasks === 0 ? '还没有任务' : '都做完了')
+                            .fontSize(S.bodySize).fontWeight(FontWeight.Medium).fontColor(tk(this.dark, 'textFaint'))
+                          Text(this.kTotalTasks === 0 ? '先加一件今天想做的事。' : '所有任务都完成了，休息一下。')
+                            .fontSize(S.subSize).fontColor(tk(this.dark, 'textPale'))
+                        }
+                        .width('100%')
+                        .padding({ top: 18, bottom: 18 })
+                        .alignItems(HorizontalAlign.Center)
+                      } else {
+                        ForEach(this.kRecent, (t: Task) => {
+                          this.taskRow(t)
+                        }, (t: Task) => `rc-${t.id}-${this.tick}`)
+                      }
+
+                      Divider().color('#EAF2F9').strokeWidth(1).margin({ top: 8 })
+
+                      Row({ space: 6 }) {
+                        Text(`还有 ${this.kOpenAll} 件待处理`).fontSize(10).fontColor(tk(this.dark, 'textFaint'))
+                        Blank()
+                        Text('去任务面板 →')
+                          .fontSize(10)
+                          .fontColor(tc(this.dark, '#5E7183', 1))
+                          .padding({ left: 9, right: 9, top: 3, bottom: 3 })
+                          .borderRadius(9)
+                          .backgroundColor(tk(this.dark, 'card'))
+                          .border({ width: 1, color: tk(this.dark, 'line') })
+                          .onClick(() => { this.onNavigate('tasks'); })
+                      }
+                      .width('100%')
+                      .margin({ top: 8 })
+                      .alignItems(VerticalAlign.Center)
+                    }
+                    .width('100%')
+                  }
+
+                }
+              }
+
+              // ⑥ 本月成长日历
+              GridCol({ span: this.spanFor(1) }) {
+                Column() {
+                  Card({
+                      fixedHeight: this.gridWide() ? this.rowH[1] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(3, h); },
+                      title: '本月成长日历', headMode: 'arrows',
+                    onPrev: () => { this.calOffset -= 1; this.recalc(); },
+                    onNext: () => { this.calOffset += 1; this.recalc(); }
+                  }) {
+                    MonthCal({ cells: this.kCalCells, monthLabel: this.kCalLabel, doneCount: this.kCalDone })
+                  }
+
+                }
+              }
+
+
+              // ⑦ 核心模块
+              GridCol({ span: this.spanFor(2) }) {
+                Column() {
+                  Card({
+                    fixedHeight: this.gridWide() ? this.rowH[2] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(4, h); },
+                    title: '核心模块', headMode: 'text', headText: '进入任务面板 ›', onHead: () => { this.onNavigate('tasks'); } }) {
+                    Column({ space: 8 }) {
+                      Row({ space: 8 }) {
+                        Column() {
+                          ModTile({ icon: 'tasks', label: '任务面板', sub: '计划与打卡', onTap: () => { this.onNavigate('tasks'); } })
+                        }.layoutWeight(1)
+                        Column() {
+                          ModTile({
+                            icon: 'calendar', label: '日历安排', sub: '日程与时间块',
+                            iconBg: '#E3F8F2', iconFg: '#267261', onTap: () => { this.onNavigate('calendar'); }
+                          })
+                        }.layoutWeight(1)
+                      }.width('100%')
+                      Row({ space: 8 }) {
+                        Column() {
+                          ModTile({
+                            icon: 'note', label: '记录灵感', sub: '随手写下想法',
+                            iconBg: '#FCEAF2', iconFg: '#AA4071', onTap: () => { this.onNavigate('notes'); }
+                          })
+                        }.layoutWeight(1)
+                        Column() {
+                          ModTile({
+                            icon: 'wand', label: '每日复盘', sub: '回顾与调整',
+                            iconBg: '#F1ECFE', iconFg: '#6B4FD0', onTap: () => { this.onNavigate('review'); }
+                          })
+                        }.layoutWeight(1)
+                      }.width('100%')
+                      Row({ space: 8 }) {
+                        Column() {
+                          ModTile({
+                            icon: 'target', label: '每日习惯', sub: '连续打卡',
+                            iconBg: '#FDF4DC', iconFg: '#876312', onTap: () => { this.onNavigate('habits'); }
+                          })
+                        }.layoutWeight(1)
+                        Column() {
+                          ModTile({
+                            icon: 'grid', label: '数据洞察', sub: '趋势与投入',
+                            iconBg: '#E9F3FB', iconFg: '#356B91', onTap: () => { this.onNavigate('stats'); }
+                          })
+                        }.layoutWeight(1)
+                      }.width('100%')
+                      Row({ space: 8 }) {
+                        Column() {
+                          ModTile({
+                            icon: 'search', label: '全局搜索', sub: '找任何一条',
+                            iconBg: '#E1F7F5', iconFg: '#0F6B66', onTap: () => { this.onNavigate('search'); }
+                          })
+                        }.layoutWeight(1)
+                        Column() {
+                          ModTile({
+                            icon: 'gear', label: '偏好设置', sub: '本地与 AI',
+                            iconBg: '#F0F4F8', iconFg: '#52697E', onTap: () => { this.onNavigate('settings'); }
+                          })
+                        }.layoutWeight(1)
+                      }.width('100%')
+                    }
+                    .width('100%')
+                  }
+
+                }
+              }
+
+              // ⑧ 本周小结
+              GridCol({ span: this.spanFor(1) }) {
+                Column() {
+                  Card({
+                    fixedHeight: this.gridWide() ? this.rowH[2] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(5, h); },
+                    title: '本周小结' }) {
+                    Column({ space: 10 }) {
+                      Text(this.kSummary)
+                        .fontSize(S.subSize)
+                        .fontColor(tc(this.dark, '#4E6579', 1))
+                        .lineHeight(19)
+                        .width('100%')
+                      MiniBars({ values: this.kTrendValues, chartHeight: 44 })
+                    }
+                    .width('100%')
+                  }
+
+                }
+              }
+
+
+              // ⑨ 灵感派
+              GridCol({ span: this.spanFor(2) }) {
+                Column() {
+                  Card({
+                      fixedHeight: this.gridWide() ? this.rowH[3] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(6, h); },
+                      title: '灵感派', sub: '从记录里挑',
+                    headMode: 'text', headText: '换一批 ›',
+                    onHead: () => { this.spin += 1; this.recalc(); }
+                  }) {
+                    Column({ space: 10 }) {
+                      if (this.kCandCount === 0) {
+                        Column({ space: 5 }) {
+                          Text('还没有记录').fontSize(S.bodySize).fontColor(tk(this.dark, 'textFaint'))
+                          Text('随手记下第一条灵感。').fontSize(S.subSize).fontColor(tk(this.dark, 'textPale'))
+                        }
+                        .width('100%')
+                        .padding({ top: 14, bottom: 14 })
+                        .alignItems(HorizontalAlign.Center)
+                      } else {
+                        Column() {
+                          Donut({ pieces: this.kCandPieces, boxSize: 118, holeSize: 22 })
+                        }
+                        .width(118)
+                        .height(118)
+                        .borderRadius(59)
+                        .backgroundColor(tk(this.dark, 'card'))
+                        .justifyContent(FlexAlign.Center)
+                        .onClick(() => { this.spin += 1; })
+
+                        Column({ space: 2 }) {
+                          ForEach(this.kCandItems.slice(0, 3), (c: CandItem, idx: number) => {
+                            Column({ space: 4 }) {
+                              Row({ space: 8 }) {
+                                Row() {
+                                  Text(`${idx + 1}`).fontSize(8).fontColor(idx === 0 ? tkInk(this.dark, 'brandDeep') : tc(this.dark, '#8FA2B3', 1))
+                                }
+                                .width(16)
+                                .height(16)
+                                .borderRadius(8)
+                                .backgroundColor(idx === 0 ? tk(this.dark, 'brandSoft') : tc(this.dark, '#F1F7FC', 0))
+                                .justifyContent(FlexAlign.Center)
+                                .alignItems(VerticalAlign.Center)
+                                Text(c.title)
+                                  .fontSize(S.subSize)
+                                  .fontColor(tk(this.dark, 'text'))
+                                  .maxLines(1)
+                                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                                  .layoutWeight(1)
+                                Text(`${c.pct}%`).fontSize(S.microSize).fontColor(tc(this.dark, '#8FA2B3', 1))
+                              }
+                              .width('100%')
+                              .padding({ top: 5, bottom: 3 })
+                              .alignItems(VerticalAlign.Center)
+
+                              Row() {
+                                Row()
+                                  .width(`${c.pct}%`)
+                                  .height(4)
+                                  .borderRadius(2)
+                                  .backgroundColor(c.color)
+                              }
+                              .width('100%')
+                              .height(4)
+                              .borderRadius(2)
+                              .backgroundColor(tk(this.dark, 'track'))
+                            }
+                            .width('100%')
+                            .onClick(() => { this.onNavigate('notes'); })
+                          }, (c: CandItem) => `cand-${c.id}-${c.pct}-${this.tick}`)
+
+                          Text('从记下的东西里，挑一条现在就动手。')
+                            .fontSize(S.microSize + 0.5)
+                            .fontColor(tk(this.dark, 'textHint'))
+                            .margin({ top: 6 })
+                        }
+                        .width('100%')
+                      }
+                    }
+                    .width('100%')
+                    .alignItems(HorizontalAlign.Center)
+                  }
+
+                }
+              }
+
+              // ⑩ 今日一句
+              GridCol({ span: this.spanFor(1) }) {
+                Column() {
+                  Card({
+                    fixedHeight: this.gridWide() ? this.rowH[3] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(7, h); },
+                    title: '今日一句', headMode: 'text', headText: '全部 ›', onHead: () => { this.onNavigate('notes'); } }) {
+                    Column({ space: 9 }) {
+                      Row({ space: 8 }) {
+                        SymbolGlyph(sym('quote')).fontSize(14).fontColor([tc(this.dark, '#B9CAD8', 1)])
+                        Column({ space: 4 }) {
+                          Text('每一个微小的坚持，都在让你靠近更喜欢的自己。')
+                            .fontSize(S.bodySize)
+                            .fontColor(tc(this.dark, '#4E6579', 1))
+                            .lineHeight(21)
+                            .width('100%')
+                          if (this.kQuote.length > 0) {
+                            Text(`最近记下：${this.kQuote}`)
+                              .fontSize(S.tinySize)
+                              .fontColor(tk(this.dark, 'textHint'))
+                              .width('100%')
+                          }
+                        }
+                        .alignItems(HorizontalAlign.Start)
+                        .layoutWeight(1)
+                      }
+                      .width('100%')
+                      .alignItems(VerticalAlign.Top)
+
+                      if (this.notes.length > 0) {
+                        Column({ space: 6 }) {
+                          ForEach(this.notes.slice(0, 3), (n: Note) => {
+                            Row({ space: 7 }) {
+                              Row().width(6).height(6).borderRadius(3).backgroundColor(tk(this.dark, 'brand'))
+                              Text(n.title.length > 0 ? n.title : n.content.substring(0, 16))
+                                .fontSize(S.subSize)
+                                .fontColor(tc(this.dark, '#4E6579', 1))
+                                .maxLines(1)
+                                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                                .layoutWeight(1)
+                              Text(D.short(D.dateOf(n.updated_at))).fontSize(S.microSize).fontColor(tk(this.dark, 'textHint'))
+                            }
+                            .width('100%')
+                            .alignItems(VerticalAlign.Center)
+                            .onClick(() => { this.onNavigate('notes'); })
+                          }, (n: Note) => `qn-${n.id}-${this.tick}`)
+                        }
+                        .width('100%')
+                      }
+
+                      Divider().color('#EAF2F9').strokeWidth(1)
+                      Row({ space: 6 }) {
+                        Text('共 ').fontSize(10).fontColor(tk(this.dark, 'textFaint'))
+                        Text(`${this.notes.length}`).fontSize(10).fontColor(tc(this.dark, '#4E6579', 1)).fontWeight(FontWeight.Medium)
+                        Text(' 条记录').fontSize(10).fontColor(tk(this.dark, 'textFaint'))
+                        Blank()
+                      }
+                      .width('100%')
+                    }
+                    .width('100%')
+                  }
+
+                }
+              }
+              }
+              .alignItems(ItemAlign.Start)
+              .width('100%')
+              }
+              .width('100%')
+
+              // ⑪ 本周安排（v2.9：接入日历日程；日期可点，看那天的安排）
+              SecHead({
+                title: '本周安排', count: `${this.kWeekArrCount} 件安排`, rightMode: 'arrows',
+                onPrev: () => { this.weekOffset -= 1; this.dayPick = -1; this.recalc(); },
+                onNext: () => { this.weekOffset += 1; this.dayPick = -1; this.recalc(); }
+              })
+
+              Column() {
+                Card({ title: '给灵感留一点时间', sub: this.kWeekRange }) {
+                  WeekGantt({
+                    dayNums: this.kWeekDayNums,
+                    todayIdx: this.kTodayIdx,
+                    bars: this.kWeekBars,
+                    selectedIdx: this.dayPick,
+                    onDayTap: (i: number) => {
+                this.dayPick = this.dayPick === i ? -1 : i;
+                this.recalc();
+              }
+                  })
+
+                  if (this.dayPick >= 0) {
+                    this.dayPanel()
+                  } else {
+                    this.weekPanel()
+                  }
+
+                  Row({ space: 10 }) {
+                    ForEach(['work', 'side', 'media', 'study', 'life'], (a: string) => {
+                      Row({ space: 4 }) {
+                        Row().width(6).height(6).borderRadius(2).backgroundColor(areaColor(this.dark, a))
+                        Text(areaLabel(a)).fontSize(S.microSize).fontColor(tk(this.dark, 'textHint'))
+                      }
+                    }, (a: string) => `wf-${a}`)
+                  }
+                  .width('100%')
+                  .margin({ top: 8 })
+                }
+              }
+              .width('100%')
+              .margin({ bottom: S.pageBottom })
             }
             .width('100%')
-            .margin({ bottom: S.pageBottom })
+            .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+            .alignItems(HorizontalAlign.Start)
           }
-          .width('100%')
-          .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
-          .alignItems(HorizontalAlign.Start)
         }
+        .onScrollEdge(onEdgeScrolled)
+        .onWillScroll(onEdgeWillScroll)
+        .align(Alignment.TopStart)
+        .width('100%')
+        .height('100%')
+        .scrollBar(BarState.Off)
+        .constraintSize({ maxWidth: 1240 })
+        .backgroundColor(tk(this.dark, 'bg'))
+        .edgeEffect(EdgeEffect.Spring)
+        // v4.5：滚动时把右下角悬浮按钮藏起来（它正好压在趋势图末点气泡上），停了就回来
+        .onDidScroll(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+        .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
       }
-      .onScrollEdge(onEdgeScrolled)
-      .onWillScroll(onEdgeWillScroll)
-      .align(Alignment.TopStart)
+      .onRefreshing(() => { this.doRefresh(); })
       .width('100%')
       .height('100%')
-      .scrollBar(BarState.Off)
-      .constraintSize({ maxWidth: 1240 })
-      .backgroundColor(tk(this.dark, 'bg'))
-      .edgeEffect(EdgeEffect.Spring)
-      // v4.5：滚动时把右下角悬浮按钮藏起来（它正好压在趋势图末点气泡上），停了就回来
-      .onDidScroll(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
-      .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
+      .bindSheet($$this.showAdd, this.addSheet(), {
+        // v4.26：宽屏时给「窗口高度」这个绝对值，别写 '100%'
+        //   （bindSheet 面板里百分比会被当成内容高度，面板撑不满、卡片不居中）
+        // v4.26：宽屏时用 SheetSize.LARGE（面板几乎占满屏幕），窄屏还是贴底抽屉。
+        //   之前写 '100%'，在 bindSheet 面板里百分比被解析成「内容高度」，
+        //   面板只有 864vp（竖屏实测），卡片被顶到下半屏、遮罩也只盖住下半屏。
+          height: SheetSize.FIT_CONTENT,
+        dragBar: !this.wideMode(),
+        showClose: false,
+        backgroundColor: Color.Transparent,   // 面板透明，弹层内容自己带圆角白底
+        width: '100%'})
+  
+
+      // v4.26（平板竖屏）：宽屏的弹层在页面里自己画 —— bindSheet 的面板高度是
+      //   平台按「内容高度」算的（竖屏实测只有 560vp），卡片会被裁掉底部按钮，
+      //   自己画的遮罩也只能盖住面板那一块。窄屏仍然走 bindSheet 底部抽屉。
+      if (this.wideMode() && this.wideOpen) {
+        this.addSheet()
+      }
     }
-    .onRefreshing(() => { this.doRefresh(); })
     .width('100%')
     .height('100%')
-    .bindSheet($$this.showAdd, this.addSheet(), {
-      height: this.wideMode() ? '100%' : SheetSize.FIT_CONTENT,
-      dragBar: !this.wideMode(),
-      showClose: false,
-      backgroundColor: Color.Transparent,   // 面板透明，弹层内容自己带圆角白底
-      width: '100%'})
   }
 
   @Builder addSheetBody() {
@@ -1642,10 +1718,10 @@ export struct HomeView {
       editingId: -1,
       defaultStatus: 'todo',
       onSaved: () => {
-        this.showAdd = false;
+        this.closeSheet();
         toast(this.getUIContext(), '任务已添加');
       },
-      onCancel: () => { this.showAdd = false; }
+      onCancel: () => { this.closeSheet(); }
     })
   }
 
@@ -1653,7 +1729,7 @@ export struct HomeView {
   @Builder addSheet() {
     SheetFrame({
       wide: this.wideMode(),
-      onClose: () => { this.showAdd = false; },
+      onClose: () => { this.closeSheet(); },
       content: () => { this.addSheetBody(); }
     })
   }

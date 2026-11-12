@@ -2,7 +2,6 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { display, window } from '@kit.ArkUI';
 import { Boot } from '../db/Boot';
-import { Privacy } from '../utils/Privacy';
 
 const DOMAIN = 0x0000;
 
@@ -25,9 +24,8 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate<number>('wb_content_w', 0);
     AppStorage.setOrCreate<number>('wb_cols', 1);
     AppStorage.setOrCreate<number>('wb_side_inset', 0);
-    // v4.7：隐私同意状态（应用市场要求：同意隐私政策之前不能进入 App）
-    AppStorage.setOrCreate<boolean>('wb_privacy_ok', false);
-    AppStorage.setOrCreate<boolean>('wb_privacy_ready', false);
+    // v4.25：当前窗口高度（弹层高度按它算，不按屏幕高度算）
+    AppStorage.setOrCreate<number>('wb_window_h', 0);
     // v4.24：边界提示胶囊（@StorageLink 要求 key 先存在）
     AppStorage.setOrCreate<string>('wb_edge_hint_text', '');
     AppStorage.setOrCreate<number>('wb_edge_hint_side', 0);
@@ -36,13 +34,6 @@ export default class EntryAbility extends UIAbility {
     // 本地库闸门：开库 + 建表 + 铺示例数据，只做一次；页面等 Boot.when() 再读数据
     Boot.start(this.context);
     this.dbReady = Boot.when();
-    // v4.7：读隐私同意状态（异步；读完了页面才知道要不要弹隐私弹窗）
-    Privacy.init(this.context).then(() => {
-      Privacy.accepted().then((ok: boolean) => {
-        AppStorage.set<boolean>('wb_privacy_ok', ok);
-        AppStorage.set<boolean>('wb_privacy_ready', true);
-      });
-    });
     hilog.debug(DOMAIN, 'workbench', '%{public}s', 'Ability onCreate, local db opening');
   }
 

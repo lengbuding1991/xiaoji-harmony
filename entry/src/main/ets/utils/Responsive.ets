@@ -32,6 +32,16 @@ export class R {
   static readonly KEY_CW: string = 'wb_content_w';
   /** 内容区列数（AppStorage） */
   static readonly KEY_COLS: string = 'wb_cols';
+  /**
+   * 当前**窗口**高度（vp，AppStorage）。
+   *
+   * v4.25 新增：之前算弹层高度用的是「屏幕高度」（display.getDefaultDisplaySync），
+   * 但窗口高度 ≠ 屏幕高度 —— 平板分屏、悬浮窗、横屏时，窗口比屏幕矮一大截，
+   * 于是弹层比窗口还高，底下的「保存」按钮被挤出屏幕，点不到
+   * （AGC 审核在 MatePad Pro 上报的「无法滑动到底部、无法添加成功任务」就是这个）。
+   * ⇒ 改成记窗口自己的高度（Index.ets 根节点的 onAreaChange 量得到）。
+   */
+  static readonly KEY_WH: string = 'wb_window_h';
 
   /** 读当前档位 */
   static mode(): number {
@@ -49,6 +59,16 @@ export class R {
   static contentW(): number {
     const v: number | undefined = AppStorage.get<number>(R.KEY_CW);
     return v === undefined ? 0 : v;
+  }
+
+  /**
+   * 当前**窗口**高度（vp）。
+   * 取不到（还没量到）就退回屏幕高度，至少不会算出 0 把弹层压扁。
+   */
+  static windowH(): number {
+    const v: number | undefined = AppStorage.get<number>(R.KEY_WH);
+    if (v === undefined || v <= 0) { return R.screenH(); }
+    return v;
   }
 
   /** 内容区列数 */
@@ -92,18 +112,42 @@ export class R {
     return '100%';
   }
 
-  /** 左侧导航栏宽度（vp）：网页端是 236px，这里按屏幕比例收一点 */
+  /**
+   * 左侧导航栏宽度（vp）：网页端是 236px，这里按屏幕比例收一点。
+   *
+   * v4.26：窗口 < 980vp（平板竖屏 960vp 就是这个情况）时，
+   *   照网页端 `@media(max-width:980px){.side{width:70px} main{margin-left:70px}}`
+   *   收成 70vp 的图标栏 —— 否则 224vp 的导航把 960vp 的窗口切掉一大块，
+   *   内容区只剩 704vp，首页被挤成窄列、卡片之间出现大片空白（用户在平板竖屏下报的）。
+   */
   static railW(): number {
+    if (R.railCompact()) {
+      return 70;
+    }
     return R.big() ? 224 : 168;
+  }
+
+  /** 窄导航（只留图标）：网页端 980vp 断点，只有大屏档位才会收 */
+  static railCompact(): boolean {
+    if (R.mode() < Layout.Expanded) {
+      return false;
+    }
+    const w: number = R.width();
+    return w > 0 && w < 980;
   }
 
   /**
    * 窗口宽度（vp）→ 档位 + 列数，写进 AppStorage。
    * 宽度没变就不写（免得白白触发一次全 App 重画）。
+   * v4.25：多带一个窗口高度（弹层高度要用它，见 KEY_WH）。
    */
-  static update(widthVp: number): void {
+  static update(widthVp: number, heightVp: number = 0): void {
     const w: number = Math.round(widthVp);
+    const h: number = Math.round(heightVp);
     if (w <= 0) { return; }
+    if (h > 0) {
+      AppStorage.set<number>(R.KEY_WH, h);
+    }
     if (Math.abs(w - R.width()) < 1) { return; }
     let m: number = Layout.Compact;
     if (w >= 900) {
@@ -112,7 +156,8 @@ export class R {
       m = Layout.Medium;
     }
     // 内容区宽度：宽屏要扣掉左侧导航栏和左右内边距
-    const rail: number = m >= Layout.Medium ? (m >= Layout.Expanded ? 224 : 168) : 0;
+    // v4.26：980vp 以下（平板竖屏）导航收成 70vp 图标栏，照网页端 @media(max-width:980px)
+    const rail: number = m >= Layout.Medium ? (m >= Layout.Expanded ? (w < 980 ? 70 : 224) : 168) : 0;
     const pad: number = m >= Layout.Medium ? 32 : 0;
     const cw: number = w - rail - pad;
     // 列数：照网页端 .home-grid 的思路，一列至少 620vp、三列要 1120vp
@@ -149,8 +194,20 @@ export class R {
    *   于是百分比落到一个莫名其妙的小值上：新建项目抽屉只剩 236vp 高，
    *   五栏表单只能露出两栏，底下的「属于哪一块 / 颜色 / 目标日」全被切掉。
    *   ⇒ 换成按屏幕高度算出来的**绝对 vp 数**，不依赖任何祖先的高度。
+   *
+   * v4.25：而且要按**窗口**高度算，不是屏幕高度。
+   *   平板横屏 / 分屏 / 悬浮窗时窗口比屏幕矮，按屏幕算出来的抽屉会高出窗口，
+   *   底下的「保存」按钮被挤出屏幕 ⇒ 审核在 MatePad Pro 上判「无法添加成功任务」。
    */
   static sheetBodyH(): number {
-    return Math.round(R.screenH() * 0.56);
+    return Math.max(160, Math.round(R.windowH() * 0.56));
+  }
+
+  /**
+   * 宽屏弹层（居中卡片）整块能给多高（vp）。
+   * 卡片 = 头部 + 表单区 + 底部按钮条，三块加起来不能超过它，否则按钮条会被切掉。
+   */
+  static sheetMaxH(): number {
+    return Math.max(260, Math.round(R.windowH() - 24));
   }
 }

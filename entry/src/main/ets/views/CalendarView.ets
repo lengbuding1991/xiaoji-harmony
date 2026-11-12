@@ -8,6 +8,7 @@
 import { Store } from '../store/Store';
 import { advanceDate } from '../db/Repo';
 import { areaColor, areaLabel, C, S, tc, tk, tkInk } from '../utils/Theme';
+import { R } from '../utils/Responsive';
 import { D } from '../utils/DateUtil';
 import { Card } from '../components/Card';
 import { Chip } from '../components/Widgets';
@@ -46,6 +47,37 @@ export struct CalendarView {
   @State selected: string = D.today();
 
   @State showSheet: boolean = false;
+  // v4.26（平板竖屏）：宽屏的弹层不再用 bindSheet。
+  //   bindSheet 的面板高度是平台按「内容高度」算的（平板竖屏实测只有 560vp），
+  //   卡片会被裁掉底部「保存/取消」，自己画的遮罩也只能盖住面板那一块。
+  //   ⇒ 宽屏改成在页面里自己铺一层遮罩 + 居中卡片（wideOverlay），窄屏仍是底部抽屉。
+  @State wideOpen: boolean = false;
+
+  /** v4.26：宽屏走页面内浮层，窄屏走 bindSheet 底部抽屉 */
+  private openSheet(): void {
+    if (this.wideMode()) {
+      this.wideOpen = true;
+      // 浮层盖住内容区时，右下角的悬浮按钮（在页面层）会浮到遮罩上面，先藏掉
+      AppStorage.setOrCreate<boolean>('wb_fab_hide', true);
+    } else {
+      this.showSheet = true;
+    }
+  }
+
+  private closeSheet(): void {
+    this.showSheet = false;
+    this.wideOpen = false;
+    AppStorage.setOrCreate<boolean>('wb_fab_hide', false);
+  }
+
+  /** v4.26：宽屏时铺在页面最上层的遮罩 + 居中卡片 */
+  @Builder
+  wideOverlay() {
+    if (this.wideMode() && this.wideOpen) {
+      this.sheetContent()
+    }
+  }
+
   // v4.4：ArkUI V1 只刷新「表达式里直接读过 state」的节点，
   // 方法调用里的派生值（weekCount() / tasksOf().length / dayGaps()…）不算依赖，
   // 数据变了不会自己更新 ⇒ 全部预计算进 @State。
@@ -389,7 +421,7 @@ export struct CalendarView {
     this.sheetStart = this.hmOf(useMin);
     const endMin: number = e0 > 23 * 60 + 59 ? 23 * 60 + 59 : e0;
     this.sheetEnd = this.hmOf(endMin);
-    this.showSheet = true;
+    this.openSheet();
   }
 
   private openEdit(id: number): void {
@@ -397,7 +429,7 @@ export struct CalendarView {
     this.sheetStart = '';
     this.sheetEnd = '';
     this.editingId = id;
-    this.showSheet = true;
+    this.openSheet();
   }
 
   // ── 周视图：每天一卡 ──
@@ -730,12 +762,12 @@ export struct CalendarView {
       defaultEnd: this.sheetEnd,
       onSaved: () => {
         const wasEdit: boolean = this.editingId > 0;
-        this.showSheet = false;
+        this.closeSheet();
         this.editingId = -1;
         toast(this.getUIContext(), wasEdit ? '日程已更新' : '排上了');
       },
       onCancel: () => {
-        this.showSheet = false;
+        this.closeSheet();
         this.editingId = -1;
       }
     })
@@ -745,7 +777,7 @@ export struct CalendarView {
   @Builder sheetContent() {
     SheetFrame({
       wide: this.wideMode(),
-      onClose: () => { this.showSheet = false; this.editingId = -1; },
+      onClose: () => { this.closeSheet(); this.editingId = -1; },
       content: () => { this.sheetBody(); }
     })
   }
@@ -761,139 +793,157 @@ export struct CalendarView {
   }
 
   build() {
-    Scroll() {
-      Column() {
-        Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+    Stack() {
 
-        this.pageTop()
+      Scroll() {
+        Column() {
+          Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
 
-        // page-head
-        Column({ space: 5 }) {
-          Text('CALENDAR · 日历安排').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
-          Text(this.view === 0 ? '这一周，先占住时间。' : '这一天，先占住时间。')
-            .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
-          Text(this.view === 0
-            // v4.4：App 里没有拖动改时间的功能，别再承诺
-            ? `${this.kWeekLabel} · ${this.kWeekCount} 个日程`
-            : `${D.md(this.selected)} ${D.weekdayFull(D.parse(this.selected))} · ${this.kSelEvents.length + this.kSelAllDay.length} 个日程`)
-            .fontSize(11)
-            .fontColor(tk(this.dark, 'textSub'))
-        }
-        .width('100%')
-        .alignItems(HorizontalAlign.Start)
-        .padding({ top: 14, bottom: 12 })
+          this.pageTop()
 
-        // 视图切换 + 翻页
-        Row({ space: 6 }) {
-          Chip({ text: '周', active: this.view === 0, onTap: () => { this.view = 0; } })
-          Chip({ text: '日', active: this.view === 1, onTap: () => { this.view = 1; } })
-          Blank()
-          Row() {
-            // v4.23：arrow_left 在 fs16 墨迹 12.0x12.0vp，满足 2.1.4.3.2
-            SymbolGlyph(sym('left')).fontSize(16).fontColor([tc(this.dark, '#7C8F9F', 1)])
-          }
-          .width(28).height(28).borderRadius(8)
-          .backgroundColor(tk(this.dark, 'card'))
-          .border({ width: 1, color: tk(this.dark, 'line') })
-          .justifyContent(FlexAlign.Center)
-          .alignItems(VerticalAlign.Center)
-          .onClick(() => {
-            if (this.view === 0) {
-              this.weekOffset -= 1;
-              this.recalc();
-            } else {
-              this.selected = D.key(D.dateAdd(D.parse(this.selected), -1));
-              this.recalc();
-            }
-          })
-
-          Text('今天')
-            .fontSize(11)
-            .fontColor(tc(this.dark, '#6A7F92', 1))
-            .height(28)
-            .padding({ left: 10, right: 10 })
-            .borderRadius(8)
-            .backgroundColor(tk(this.dark, 'card'))
-            .border({ width: 1, color: tk(this.dark, 'line') })
-            .textAlign(TextAlign.Center)
-            .onClick(() => {
-              this.weekOffset = 0;
-              this.selected = D.today();
-              this.recalc();
-            })
-
-          Row() {
-            // v4.23：arrow_right 在 fs16 墨迹 14.3x12.0vp，满足 2.1.4.3.2
-            SymbolGlyph(sym('right')).fontSize(16).fontColor([tc(this.dark, '#7C8F9F', 1)])
-          }
-          .width(28).height(28).borderRadius(8)
-          .backgroundColor(tk(this.dark, 'card'))
-          .border({ width: 1, color: tk(this.dark, 'line') })
-          .justifyContent(FlexAlign.Center)
-          .alignItems(VerticalAlign.Center)
-          .onClick(() => {
-            if (this.view === 0) {
-              this.weekOffset += 1;
-              this.recalc();
-            } else {
-              this.selected = D.key(D.dateAdd(D.parse(this.selected), 1));
-              this.recalc();
-            }
-          })
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-        .margin({ bottom: 12 })
-
-        // 周视图：每天一卡
-        if (this.view === 0) {
-          Column() {
-            ForEach(this.weekDays(), (d: Date) => {
-              this.dayCard(d)
-            }, (d: Date) => `wd-${D.key(d)}-${this.tick}`)
+          // page-head
+          Column({ space: 5 }) {
+            Text('CALENDAR · 日历安排').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
+            Text(this.view === 0 ? '这一周，先占住时间。' : '这一天，先占住时间。')
+              .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
+            Text(this.view === 0
+              // v4.4：App 里没有拖动改时间的功能，别再承诺
+              ? `${this.kWeekLabel} · ${this.kWeekCount} 个日程`
+              : `${D.md(this.selected)} ${D.weekdayFull(D.parse(this.selected))} · ${this.kSelEvents.length + this.kSelAllDay.length} 个日程`)
+              .fontSize(11)
+              .fontColor(tk(this.dark, 'textSub'))
           }
           .width('100%')
           .alignItems(HorizontalAlign.Start)
-        } else {
-          // 日视图：时间轴卡 + 「这天要做」卡（对齐工作台 day-side）
-          Card({
-            title: `${D.md(this.selected)} ${D.weekdayFull(D.parse(this.selected))}`,
-            // v4.12：跟日程关联上的任务已经合并进日程那一行，计数不再重复算
-            sub: `${this.eventsOf(this.selected).length} 个日程 · ${this.kSelTasks.length} 件任务`,
-            headMode: 'add',
-            headText: '排日程',
-            onHead: () => { this.openNew(this.selected, 0); },
-            bodyPadBottom: 12
-          }) {
-            this.dayTimeline()
+          .padding({ top: 14, bottom: 12 })
+
+          // 视图切换 + 翻页
+          Row({ space: 6 }) {
+            Chip({ text: '周', active: this.view === 0, onTap: () => { this.view = 0; } })
+            Chip({ text: '日', active: this.view === 1, onTap: () => { this.view = 1; } })
+            Blank()
+            Row() {
+              // v4.23：arrow_left 在 fs16 墨迹 12.0x12.0vp，满足 2.1.4.3.2
+              SymbolGlyph(sym('left')).fontSize(16).fontColor([tc(this.dark, '#7C8F9F', 1)])
+            }
+            .width(28).height(28).borderRadius(8)
+            .backgroundColor(tk(this.dark, 'card'))
+            .border({ width: 1, color: tk(this.dark, 'line') })
+            .justifyContent(FlexAlign.Center)
+            .alignItems(VerticalAlign.Center)
+            .onClick(() => {
+              if (this.view === 0) {
+                this.weekOffset -= 1;
+                this.recalc();
+              } else {
+                this.selected = D.key(D.dateAdd(D.parse(this.selected), -1));
+                this.recalc();
+              }
+            })
+
+            Text('今天')
+              .fontSize(11)
+              .fontColor(tc(this.dark, '#6A7F92', 1))
+              .height(28)
+              .padding({ left: 10, right: 10 })
+              .borderRadius(8)
+              .backgroundColor(tk(this.dark, 'card'))
+              .border({ width: 1, color: tk(this.dark, 'line') })
+              .textAlign(TextAlign.Center)
+              .onClick(() => {
+                this.weekOffset = 0;
+                this.selected = D.today();
+                this.recalc();
+              })
+
+            Row() {
+              // v4.23：arrow_right 在 fs16 墨迹 14.3x12.0vp，满足 2.1.4.3.2
+              SymbolGlyph(sym('right')).fontSize(16).fontColor([tc(this.dark, '#7C8F9F', 1)])
+            }
+            .width(28).height(28).borderRadius(8)
+            .backgroundColor(tk(this.dark, 'card'))
+            .border({ width: 1, color: tk(this.dark, 'line') })
+            .justifyContent(FlexAlign.Center)
+            .alignItems(VerticalAlign.Center)
+            .onClick(() => {
+              if (this.view === 0) {
+                this.weekOffset += 1;
+                this.recalc();
+              } else {
+                this.selected = D.key(D.dateAdd(D.parse(this.selected), 1));
+                this.recalc();
+              }
+            })
+          }
+          .width('100%')
+          .alignItems(VerticalAlign.Center)
+          .margin({ bottom: 12 })
+
+          // 周视图：每天一卡
+          if (this.view === 0) {
+            Column() {
+              ForEach(this.weekDays(), (d: Date) => {
+                this.dayCard(d)
+              }, (d: Date) => `wd-${D.key(d)}-${this.tick}`)
+            }
+            .width('100%')
+            .alignItems(HorizontalAlign.Start)
+          } else {
+            // 日视图：时间轴卡 + 「这天要做」卡（对齐工作台 day-side）
+            Card({
+              title: `${D.md(this.selected)} ${D.weekdayFull(D.parse(this.selected))}`,
+              // v4.12：跟日程关联上的任务已经合并进日程那一行，计数不再重复算
+              sub: `${this.eventsOf(this.selected).length} 个日程 · ${this.kSelTasks.length} 件任务`,
+              headMode: 'add',
+              headText: '排日程',
+              onHead: () => { this.openNew(this.selected, 0); },
+              bodyPadBottom: 12
+            }) {
+              this.dayTimeline()
+            }
+
+            Column().width('100%').height(12)
+
+            this.daySide()
           }
 
-          Column().width('100%').height(12)
-
-          this.daySide()
+          // 工作台手机端 .cal2-card .cal2-foot{display:none}：去掉无实现的提示条，只留底部留白
+          Column().width('100%').height(S.pageBottom)
         }
-
-        // 工作台手机端 .cal2-card .cal2-foot{display:none}：去掉无实现的提示条，只留底部留白
-        Column().width('100%').height(S.pageBottom)
+        .width('100%')
+        .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+        .alignItems(HorizontalAlign.Start)
       }
+      .onScrollEdge(onEdgeScrolled)
+      .onWillScroll(onEdgeWillScroll)
+      .align(Alignment.TopStart)
       .width('100%')
-      .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
-      .alignItems(HorizontalAlign.Start)
+      .height('100%')
+      .scrollBar(BarState.Off)
+      .constraintSize({ maxWidth: 1240 })
+      .backgroundColor(tk(this.dark, 'bg'))
+      .edgeEffect(EdgeEffect.Spring)
+      .bindSheet($$this.showSheet, this.sheetContent(), {
+        // v4.26：宽屏时给「窗口高度」这个绝对值，别写 '100%'
+        //   （bindSheet 面板里百分比会被当成内容高度，面板撑不满、卡片不居中）
+        // v4.26：宽屏时用 SheetSize.LARGE（面板几乎占满屏幕），窄屏还是贴底抽屉。
+        //   之前写 '100%'，在 bindSheet 面板里百分比被解析成「内容高度」，
+        //   面板只有 864vp（竖屏实测），卡片被顶到下半屏、遮罩也只盖住下半屏。
+          height: SheetSize.FIT_CONTENT,
+        dragBar: !this.wideMode(),
+        showClose: false,
+        backgroundColor: Color.Transparent,   // 面板透明，弹层内容自己带圆角白底
+        width: '100%'})
+  
+
+      // v4.26（平板竖屏）：宽屏的弹层在页面里自己画 —— bindSheet 的面板高度是
+      //   平台按「内容高度」算的（竖屏实测只有 560vp），卡片会被裁掉底部按钮，
+      //   自己画的遮罩也只能盖住面板那一块。窄屏仍然走 bindSheet 底部抽屉。
+      if (this.wideMode() && this.wideOpen) {
+        this.sheetContent()
+      }
     }
-    .onScrollEdge(onEdgeScrolled)
-    .onWillScroll(onEdgeWillScroll)
-    .align(Alignment.TopStart)
     .width('100%')
     .height('100%')
-    .scrollBar(BarState.Off)
-    .constraintSize({ maxWidth: 1240 })
-    .backgroundColor(tk(this.dark, 'bg'))
-    .edgeEffect(EdgeEffect.Spring)
-    .bindSheet($$this.showSheet, this.sheetContent(), {
-      height: this.wideMode() ? '100%' : SheetSize.FIT_CONTENT,
-      dragBar: !this.wideMode(),
-      showClose: false,
-      backgroundColor: Color.Transparent,   // 面板透明，弹层内容自己带圆角白底
-      width: '100%'})
   }
 }
