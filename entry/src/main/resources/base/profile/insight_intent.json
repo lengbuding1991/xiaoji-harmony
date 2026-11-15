@@ -1,0 +1,71 @@
+{
+  "insightIntents": [
+    {
+      "intentName": "JumpFunctionPage",
+      "domain": "ToolsDomain",
+      "intentVersion": "1.0.1",
+      "srcEntry": "./ets/entryability/InsightIntentExecutorImpl.ets",
+      "uiAbility": {
+        "ability": "EntryAbility",
+        "executeMode": [
+          "foreground"
+        ]
+      },
+      "inputParams": [
+        {
+          "properties": {
+            "pageId": {
+              "type": "string",
+              "enum": [
+                {
+                  "value": "notes",
+                  "displayName": "随手记笔记",
+                  "keywords": [
+                    "笔记",
+                    "记事本",
+                    "备忘",
+                    "记录",
+                    "随手记"
+                  ],
+                  "displayDescription": "打开记录灵感页，写一条随手笔记"
+                },
+                {
+                  "value": "calendar",
+                  "displayName": "日程安排",
+                  "keywords": [
+                    "日程",
+                    "日历",
+                    "安排",
+                    "计划"
+                  ],
+                  "displayDescription": "打开日历安排页，看今天和本周的日程"
+                },
+                {
+                  "value": "tasks",
+                  "displayName": "待办清单",
+                  "keywords": [
+                    "待办",
+                    "任务",
+                    "清单",
+                    "todo"
+                  ],
+                  "displayDescription": "打开任务面板页，看待办、进行中和已完成"
+                },
+                {
+                  "value": "home",
+                  "displayName": "成长总览",
+                  "keywords": [
+                    "总览",
+                    "仪表盘",
+                    "成长"
+                  ],
+                  "displayDescription": "打开成长总览页，看今天的完成情况"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
