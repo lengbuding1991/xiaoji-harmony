@@ -1144,7 +1144,7 @@ export class Repo {
     let n: number = 0;
     await Db.beginTx();
     try {
-      await Repo.clearAll();
+      await Repo.clearAll(true);
       for (const t of data.tasks) {
         await Repo.insertTaskRow(t);
         n += 1;
@@ -1506,8 +1506,13 @@ export class Repo {
     }
   }
 
-  /** 清空所有业务数据（设置保留） */
-  static async clearAll(): Promise<OkResp> {
+  /** 清空所有业务数据
+   *
+   *  keepProfile = true 时保留「称呼」—— 备份恢复会先清库再灌数据，
+   *  如果备份里没带称呼（比如网页端导出的旧文件），保留本机原来的更合理，
+   *  不能因为恢复一次就把用户填过的名字抹掉。
+   */
+  static async clearAll(keepProfile: boolean = false): Promise<OkResp> {
     // 标记「这个库已经初始化过了」：清空之后下次冷启动不该把示例数据又铺回来
     await Db.setSetting('initialized', '1');
     await Db.exec('DELETE FROM task');
@@ -1518,13 +1523,24 @@ export class Repo {
     await Db.exec('DELETE FROM project');
     await Db.exec('DELETE FROM habit');
     await Db.exec('DELETE FROM habit_log');
+    // v4.28：称呼是你填进来的内容，也算「数据」—— 清空全部时一起清掉，
+    // 否则清完首页问候语还挂着旧名字，看着就像没清干净。
+    // 「深色模式」是外观偏好、不是数据，保留；initialized 也要留（不然示例数据会诈尸）。
+    if (!keepProfile) {
+      await Db.exec(`DELETE FROM setting WHERE key = 'user_name'`);
+    }
     const r: OkResp = { ok: true };
     return r;
   }
 
-  /** 首次启动：放一点点示例数据，别让 App 打开是空的
+  /** 首次启动：**什么都不铺**。
    *  v4.4：只在「这个库从来没初始化过」时铺一次。
    *  用户主动清空数据后，冷启动不该把示例数据又诈尸回来（和设置页的文案要对得上）。
+   *  v4.28：去掉那 2 条任务 / 1 条日程 / 2 个习惯，只留 1 条记录 ——
+   *  用户反馈「发不了两条记录」，示例任务会跟真实任务混在一起，还会被算进完成率。
+   *  v4.31：连那 1 条「欢迎使用」也不要了 —— 用户原话「默认的那条数据也不要」。
+   *  装上就是空的：所有页面都有空态文案，不需要靠示例数据教用户怎么用。
+   *  这里只把 `initialized` 标记立起来（防诈尸），之后冷启动不会再进这个分支。
    */
   static async seedIfEmpty(): Promise<boolean> {
     const initialized: string = await Db.getSetting('initialized', '');
@@ -1534,41 +1550,8 @@ export class Repo {
       await Db.setSetting('initialized', '1');
       return false;
     }
-    const today: string = Db.today();
-    const tomorrow: string = D.addDays(today, 1);
-    const now = nowStr();
-
-    await Db.exec(
-      `INSERT INTO task (title,note,status,priority,area,due_date,scheduled_start,scheduled_end,
-        estimate_min,project,project_id,tags,repeat_rule,remind_min,done_at,sort,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      ['熟悉一下这个工作台', '先看看首页、任务面板、日历和记录灵感', 'todo', 'high', 'work',
-        today, null, null, 30, '', null, '', 'none', null, null, 0, now, now]
-    );
-    await Db.exec(
-      `INSERT INTO task (title,note,status,priority,area,due_date,scheduled_start,scheduled_end,
-        estimate_min,project,project_id,tags,repeat_rule,remind_min,done_at,sort,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      ['写一条灵感试试', '在右下角那个按钮里随手记一条', 'todo', 'med', 'life',
-        tomorrow, null, null, 15, '', null, '', 'none', null, null, 1, now, now]
-    );
-    await Db.exec(
-      `INSERT INTO event (title,start_at,end_at,all_day,location,note,created_at,repeat_rule,remind_min)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-      ['今天的时间', `${today}T20:00`, `${today}T21:00`, 0, '', '', now, 'none', 10]
-    );
-    await Db.exec(
-      `INSERT INTO note (title,content,source,tags,archived,pinned,project_id,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-      ['欢迎使用', '所有数据都存在这台手机上，不上传、不联网。想带走就导出备份文件。',
-        '灵感', '', 0, 1, null, now, now]
-    );
-    await Db.exec('INSERT INTO habit (name,color,sort,archived,created_at) VALUES (?,?,?,0,?)',
-      ['每天动一动', '#3AC8C2', 1, now]);
-    await Db.exec('INSERT INTO habit (name,color,sort,archived,created_at) VALUES (?,?,?,0,?)',
-      ['早睡', '#A78BFA', 2, now]);
     await Db.setSetting('initialized', '1');
-    return true;
+    return false;
   }
 }
 

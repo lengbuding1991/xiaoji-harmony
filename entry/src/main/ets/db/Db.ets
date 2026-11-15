@@ -9,7 +9,41 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN = 0x0000;
 const DB_NAME = 'workbench.db';
 
+/** 一列的定义（从建表语句 DDL 里解析出来的） */
+interface ColumnDef {
+  name: string;
+  type: string;
+  notNull: boolean;
+  def: string;   // DEFAULT 后面的原始文本（含引号），没有就是空串
+}
+
+/** 一张表的定义 */
+interface TableSchema {
+  table: string;
+  columns: ColumnDef[];
+}
+
 export class Db {
+  /**
+   * 库结构版本。
+   *
+   * v4.28 起引入：App 升级是覆盖安装，但 /data/app/el2/.../database/workbench.db
+   * 这个文件是**保留**的 —— 老用户升级上来，拿到的是旧结构 + 旧数据。
+   * 所以「加字段 / 改表」必须先迁移再让新代码去用，否则新代码读旧库会少列、
+   * 写新列直接报错（表现是「升级完某个功能一点就崩」）。
+   *
+   * 规则：
+   *   - **加字段不用管**：只要把新字段写进下面的 DDL，开库时会自动补到老库上
+   *     （见 syncColumns()，老库一行数据都不动，只多一列）；
+   *   - 遇到「改类型 / 改列名 / 删列 / 数据回填」这类不是纯加列的变更，
+   *     才需要在这里 +1，并在 migrate() 里补一段 `if (from < N) { ... }`；
+   *   - 迁移里只允许做「加列 / 加索引 / 回填默认值」这类幂等操作，
+   *     **绝不允许删表删数据**。
+   *
+   * 1 = v4.28 之前的基线结构（10 张表 + 6 索引），老库升上来会被打上这个版本号。
+   */
+  static readonly DB_VERSION: number = 1;
+
   private static store: relationalStore.RdbStore | null = null;
   private static opening: Promise<void> | null = null;
   private static opened: boolean = false;
@@ -138,19 +172,209 @@ export class Db {
     try {
       const config: relationalStore.StoreConfig = {
         name: DB_NAME,
-        securityLevel: relationalStore.SecurityLevel.S2
+        securityLevel: relationalStore.SecurityLevel.S2,
+        // v4.28：库文件损坏时**不要**自动删库重建。
+        // 默认是 false，但显式写出来 —— 这一条是「用户数据不许被覆盖」的底线，
+        // 将来谁改了它，就等于允许平台在异常时清空用户的库。
+        allowRebuild: false
       };
       Db.store = await relationalStore.getRdbStore(ctx, config);
       for (let i = 0; i < Db.DDL.length; i++) {
         await Db.store.executeSql(Db.DDL[i]);
       }
+      // v4.28：先把「DDL 里声明、老库里还没有」的列补上（只加列，不动数据），
+      // 这样以后只要往 DDL 里加一行字段，老用户升级上来自动就有这一列，
+      // 不会出现「读得到但写不进去」。
+      await Db.syncColumns(Db.parseSchema(Db.DDL));
+      await Db.migrate();
       Db.opened = true;
-      hilog.debug(DOMAIN, 'workbench', 'local db ready: %{public}s', DB_NAME);
+      hilog.debug(DOMAIN, 'workbench', 'local db ready: %{public}s v%{public}d',
+        DB_NAME, Db.store.version);
     } catch (e) {
       const err = e as Error;
       hilog.error(DOMAIN, 'workbench', 'open db failed: %{public}s', err.message ?? 'unknown');
       throw err;
     }
+  }
+
+  /**
+   * 结构迁移（v4.28 新增）。
+   *
+   * 老用户的库 version 是 0（历史上从来没设过），新装的库也是 0。
+   * 这里统一往上顶到 DB_VERSION：每一档只做「加列 / 加索引」，
+   * 不会 DROP、不会 DELETE，跑多少遍都安全。
+   *
+   * 新增字段的模板（以后改表结构照这个写）：
+   *   if (from < 2) {
+   *     await Db.addColumnIfMissing('task', 'some_new_col', 'TEXT');
+   *   }
+   */
+  private static async migrate(): Promise<void> {
+    const s: relationalStore.RdbStore = Db.need();
+    let from: number = 0;
+    try {
+      from = s.version;
+    } catch (e) {
+      from = 0;
+    }
+    if (from >= Db.DB_VERSION) {
+      // 已经是新结构（或更新的结构，说明用户装过更新的版本又降级回来）——
+      // 不要动它，也不要为了「对齐」去删列删表。
+      return;
+    }
+    hilog.info(DOMAIN, 'workbench', 'migrate db %{public}d -> %{public}d', from, Db.DB_VERSION);
+    if (from < 1) {
+      // 1 = 基线。v4.28 之前的库没有版本号，结构也就是 DDL 里那 10 张表 ——
+      // 上面已经用 CREATE TABLE IF NOT EXISTS 全建过一遍了，这里不用补任何东西，
+      // 只是把版本号打上，让后续迁移有个起点。
+    }
+    try {
+      s.version = Db.DB_VERSION;
+    } catch (e) {
+      const err = e as Error;
+      hilog.error(DOMAIN, 'workbench', 'set db version failed: %{public}s', err.message ?? 'unknown');
+    }
+  }
+
+  /**
+   * 加一列（幂等）：列已存在就跳过。
+   * 迁移里加字段一律走它，不要直接 ALTER TABLE —— 迁移可能因为断电/杀进程重跑。
+   */
+  static async addColumnIfMissing(table: string, column: string, type: string): Promise<boolean> {
+    const have: string[] = await Db.tableColumns(table);
+    if (have.indexOf(column) >= 0) { return false; }
+    await Db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    hilog.info(DOMAIN, 'workbench', 'added column %{public}s.%{public}s', table, column);
+    return true;
+  }
+
+  /**
+   * 解析建表语句，得出「表 → 列定义」。
+   *
+   * 这是「声明式加列」的基础：DDL 是唯一的真相来源，
+   * 以后要加字段，只要在 DDL 里多写一行，开库时自动补到老库上，
+   * **不存在「忘了写迁移」这种事**。
+   */
+  private static parseSchema(ddl: string[]): TableSchema[] {
+    const out: TableSchema[] = [];
+    const head: string = 'CREATE TABLE IF NOT EXISTS';
+    for (const stmt of ddl) {
+      const i: number = stmt.indexOf(head);
+      if (i < 0) { continue; }
+      const rest: string = stmt.substring(i + head.length).trim();
+      const sp: number = rest.indexOf(' ');
+      if (sp < 0) { continue; }
+      const table: string = rest.substring(0, sp).trim();
+      const lb: number = rest.indexOf('(');
+      const rb: number = rest.lastIndexOf(')');
+      if (lb < 0 || rb <= lb) { continue; }
+      const body: string = rest.substring(lb + 1, rb);
+      const cols: ColumnDef[] = [];
+      // 一列一行，用「逗号 + 换行」切：DEFAULT 值里带逗号也不会被切错
+      const parts: string[] = body.split(/,\s*\r?\n/);
+      for (const part of parts) {
+        const line: string = part.trim().replace(/\s+/g, ' ');
+        if (line.length === 0) { continue; }
+        const up: string = line.toUpperCase();
+        // 表级约束不是列，跳过
+        if (up.startsWith('PRIMARY KEY') || up.startsWith('FOREIGN KEY')
+          || up.startsWith('UNIQUE') || up.startsWith('CHECK') || up.startsWith('CONSTRAINT')) {
+          continue;
+        }
+        const sp2: number = line.indexOf(' ');
+        if (sp2 < 0) { continue; }
+        const name: string = line.substring(0, sp2).trim();
+        const tail: string = line.substring(sp2 + 1).trim();
+        const tp: number = tail.indexOf(' ');
+        const type: string = (tp < 0 ? tail : tail.substring(0, tp)).toUpperCase();
+        const more: string = (tp < 0 ? '' : tail.substring(tp + 1)).trim();
+        // 内联主键列不能靠 ALTER TABLE ADD COLUMN 加（SQLite 不允许），跳过
+        if (more.toUpperCase().indexOf('PRIMARY KEY') >= 0) { continue; }
+        const notNull: boolean = more.toUpperCase().indexOf('NOT NULL') >= 0;
+        let def: string = '';
+        const di: number = more.toUpperCase().indexOf('DEFAULT ');
+        if (di >= 0) {
+          def = more.substring(di + 8).trim();
+          const spd: number = def.indexOf(' ');
+          if (spd >= 0) { def = def.substring(0, spd); }
+        }
+        cols.push({ name: name, type: type, notNull: notNull, def: def });
+      }
+      out.push({ table: table, columns: cols });
+    }
+    return out;
+  }
+
+  /**
+   * 把「DDL 里声明、但老库里还没有」的列补上。
+   *
+   * 规则：**只加列，绝不删列、绝不改已有列**。
+   * 加出来的列，老数据那一行的值是这一列的默认值（或者 NULL），
+   * 原来那些行**一个字都不会变**。
+   *
+   * 注意：这里必须直接用 Db.store，不能用 Db.exec / Db.query ——
+   * 那两个会走 ensure() 去 await Db.opening，而此刻我们正在 Db.opening 里面，
+   * 会把自己等死（死锁）。
+   */
+  private static async syncColumns(schema: TableSchema[]): Promise<void> {
+    const s: relationalStore.RdbStore = Db.need();
+    for (const t of schema) {
+      const have: string[] = await Db.columnsOf(s, t.table);
+      if (have.length === 0) { continue; }  // 表读不到（不该发生），跳过
+      for (const c of t.columns) {
+        if (have.indexOf(c.name) >= 0) { continue; }
+        try {
+          await s.executeSql(`ALTER TABLE ${t.table} ADD COLUMN ${Db.altColumnDef(c)}`);
+          hilog.info(DOMAIN, 'workbench', 'schema sync: added %{public}s.%{public}s',
+            t.table, c.name);
+        } catch (e) {
+          const err = e as Error;
+          hilog.error(DOMAIN, 'workbench',
+            'schema sync failed on %{public}s.%{public}s: %{public}s',
+            t.table, c.name, err.message ?? 'unknown');
+        }
+      }
+    }
+  }
+
+  /** ALTER TABLE ADD COLUMN 用的列定义（NOT NULL 必须带默认值，否则 SQLite 会拒绝） */
+  private static altColumnDef(c: ColumnDef): string {
+    let s: string = `${c.name} ${c.type}`;
+    if (c.notNull) {
+      let dv: string = c.def;
+      if (dv.length === 0) {
+        dv = (c.type === 'INTEGER' || c.type === 'REAL') ? '0' : "''";
+      }
+      s += ` NOT NULL DEFAULT ${dv}`;
+    } else if (c.def.length > 0) {
+      s += ` DEFAULT ${c.def}`;
+    }
+    return s;
+  }
+
+  /** 读一张表实际有哪些列（一次查询拿到全部列名） */
+  private static async columnsOf(s: relationalStore.RdbStore, table: string): Promise<string[]> {
+    const names: string[] = [];
+    try {
+      const rs: relationalStore.ResultSet = await s.querySql(`SELECT * FROM ${table} LIMIT 0`);
+      try {
+        const arr: string[] = rs.getColumnNames();
+        for (const n of arr) { names.push(n); }
+      } finally {
+        Db.close(rs);
+      }
+    } catch (e) {
+      const err = e as Error;
+      hilog.error(DOMAIN, 'workbench', 'read columns of %{public}s failed: %{public}s',
+        table, err.message ?? 'unknown');
+    }
+    return names;
+  }
+
+  /** 读一张表实际有哪些列（对外版） */
+  static async tableColumns(table: string): Promise<string[]> {
+    const s: relationalStore.RdbStore = Db.need();
+    return Db.columnsOf(s, table);
   }
 
   static isReady(): boolean {

@@ -3,7 +3,7 @@
 // 所有数据都存在这台手机自己的数据库里（db/Db.ets + db/Repo.ets）。
 // 这一页负责三件事：
 //   1) 让你看清「我的数据在本机」：各类内容多少条、存在哪
-//   2) 备份与恢复：导出 JSON 到剪贴板 / 从剪贴板导入（换机、留底）
+//   2) 备份与恢复：导出 JSON 到文件（v4.30，主）/ 到剪贴板（临时搬运）/ 从文件或剪贴板恢复
 //   3) 清空全部数据（自绘确认弹窗）
 // v4.20：零权限 —— 系统通知 / 代理提醒整条线已移除，本 App 不申请任何系统权限。
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -17,8 +17,9 @@ import { toast } from '../utils/Toast';
 import { Confirm } from '../utils/Confirm';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { SettingsResp, SettingsPatch, Task, Note, Review, EventItem, Project, HabitView } from '../api/Types';
-import { bundleManager } from '@kit.AbilityKit';
+import { bundleManager, common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
+import { FileBackup } from '../utils/Backup';
 import { TopBar } from '../components/TopBar';
 import { onEdgeScrolled, onEdgeWillScroll } from '../utils/EdgeHint';
 
@@ -111,6 +112,65 @@ export struct SettingsView {
   }
 
   /**
+   * v4.30：导出成文件（主备份方式）。
+   * 用系统的文件选择器，用户自己选地方存 —— 文件再大都没问题，
+   * 存到网盘目录就顺带跨设备了，也不需要任何系统权限。
+   */
+  private async exportToFile(): Promise<void> {
+    if (this.busy) { return; }
+    this.busy = true;
+    try {
+      const text: string = await Repo.exportJson();
+      const kb: number = Math.round(text.length / 1024);
+      const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const uri: string = await FileBackup.save(ctx, text, this.stampName());
+      if (uri.length === 0) {
+        toast(this.getUIContext(), '已取消导出');
+        return;
+      }
+      toast(this.getUIContext(), `已导出 ${kb}KB 备份文件`);
+    } catch (e) {
+      toast(this.getUIContext(), '导出失败：' + (e as Error).message);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /**
+   * v4.30：从文件恢复。
+   * 选一个 .json 备份文件读进来，填进下面那个框，再走原来那套「二次确认 → 覆盖恢复」。
+   */
+  private async restoreFromFile(): Promise<void> {
+    if (this.busy) { return; }
+    this.busy = true;
+    let text: string = '';
+    try {
+      const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      text = await FileBackup.pick(ctx);
+    } catch (e) {
+      this.busy = false;
+      toast(this.getUIContext(), '读取失败：' + (e as Error).message);
+      return;
+    }
+    this.busy = false;
+    if (text.trim().length === 0) {
+      toast(this.getUIContext(), '已取消');
+      return;
+    }
+    this.backupText = text;
+    this.askRestore();
+  }
+
+  /** 备份文件名：小记备份-20261115-2216.json（本地墙上时间） */
+  private stampName(): string {
+    const d: Date = new Date();
+    const p2 = (n: number): string => (n < 10 ? `0${n}` : `${n}`);
+    const y: string = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}`;
+    const hm: string = `${p2(d.getHours())}${p2(d.getMinutes())}`;
+    return `小记备份-${y}-${hm}.json`;
+  }
+
+  /**
    * 从备份文本恢复（覆盖式：先清空再写入）。
    * 备份内容由用户长按粘贴进下面的输入框 —— 不用读剪贴板的权限，
    * 也不会碰到系统弹权限框。
@@ -146,7 +206,7 @@ export struct SettingsView {
     }
     Confirm.open(this.getUIContext(), () => { this.confirmBuilder(); },
       '用备份覆盖现在的数据？',
-      '这台手机上的任务、日程、记录、项目、复盘和习惯都会被备份里的内容替换掉，替换后找不回来。建议先「复制备份」留一份现在的。',
+      '这台手机上的任务、日程、记录、项目、复盘和习惯都会被备份里的内容替换掉，替换后找不回来。建议先「存成文件」留一份现在的。',
       '覆盖恢复',
       () => { this.restoreFromText(); });
   }
@@ -155,7 +215,7 @@ export struct SettingsView {
   private askClear(): void {
     Confirm.open(this.getUIContext(), () => { this.confirmBuilder(); },
       '清空全部数据？',
-      '这台手机上的任务、日程、记录、项目、复盘和习惯都会被删除，删掉找不回来。建议先复制一份备份。',
+      '这台手机上的任务、日程、记录、项目、复盘、习惯，还有你的称呼，都会被删除，删掉找不回来。建议先复制一份备份。',
       '全部清空',
       () => { this.doClear(); });
   }
@@ -164,6 +224,9 @@ export struct SettingsView {
     try {
       await Repo.clearAll();
       await Store.I.loadAll();
+      // v4.28：称呼也是一起被清掉的，输入框里那个旧名字也要跟着清 ——
+      // 之前只刷了 Store，输入框还留着旧值，看着像没清干净，再点保存又会写回去。
+      this.userName = '';
       toast(this.getUIContext(), '已清空');
     } catch (e) {
       toast(this.getUIContext(), '清空失败：' + (e as Error).message);
@@ -337,14 +400,19 @@ export struct SettingsView {
         Column() {
           Card({ title: '备份与恢复', sub: '换手机也不怕', bodyPadTop: 8 }) {
             Column({ space: 8 }) {
-              Text('「复制备份」把全部内容打包成一段文字放进剪贴板，你可以粘贴到备忘录、聊天窗口或存成文件。')
+              Text('「存成文件」把全部内容写成一个 .json 文件，你自己选地方存 —— 存到网盘目录就顺带跨设备了，文件再大也不怕。「复制备份」是把内容放进剪贴板，方便临时搬一下。')
                 .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
               Row({ space: 8 }) {
-                this.primaryBtn(this.busy ? '处理中…' : '复制备份', () => { this.exportBackup(); })
+                this.primaryBtn(this.busy ? '处理中…' : '存成文件', () => { this.exportToFile(); })
+                this.ghostBtn('复制备份', () => { this.exportBackup(); })
+              }
+              .width('100%')
+              Row({ space: 8 }) {
+                this.ghostBtn('从文件恢复', () => { this.restoreFromFile(); })
                 this.ghostBtn('清空输入框', () => { this.backupText = ''; })
               }
               .width('100%')
-              Text('恢复：把备份内容长按粘贴到下面这个框里，再点「恢复」。恢复会覆盖当前数据（点「恢复」后会再问一次），建议先复制一份现在的。备份格式不对时不会动你现在的数据。')
+              Text('恢复：点「从文件恢复」选一个备份文件；也可以把备份内容长按粘贴到下面这个框里，再点「恢复」。恢复会覆盖当前数据（点「恢复」后会再问一次），建议先备份一份现在的。备份格式不对时不会动你现在的数据。')
                 .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
               TextArea({ placeholder: '把备份内容粘贴到这里', text: this.backupText })
                 .fontSize(11).width('100%')
@@ -361,7 +429,7 @@ export struct SettingsView {
                 this.primaryBtn(this.busy ? '处理中…' : '恢复', () => { hilog.debug(0x0000, 'workbench', 'restore button tapped'); this.askRestore(); })
               }
               .width('100%')
-              Text('数据存在 App 自己的沙盒数据库里，卸载 App 会一起删除 —— 想留底就复制一份备份。')
+              Text('数据存在 App 自己的沙盒数据库里，卸载 App 会一起删除 —— 想留底就导出成文件。')
                 .fontSize(9).fontColor(tc(this.dark, '#C89A5B', 1)).lineHeight(16).width('100%')
                 .padding({ top: 6, bottom: 6, left: 10, right: 10 })
                 .backgroundColor(tc(this.dark, '#FFF8EC', 0)).borderRadius(9)
