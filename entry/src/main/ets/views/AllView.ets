@@ -1,4 +1,4 @@
-// 全部内容 —— 一处看全所有东西（v3.0）
+// 所有内容 —— 一处看全所有东西（v3.0）
 //
 // 用户诉求（m12841）：任务、灵感、日程、项目、复盘、习惯…… 都要有「查看全部」的地方，
 // 而且每条要带日期、按**固定规则**排序（不能随心情乱跳）。
@@ -13,7 +13,7 @@
 //   全部   把上面所有条目按各自主时间合到一起，倒序（新的在上）；已完成的任务仍然沉底
 // 顶部「⇅」一键切换升降序，规则文字跟着变；点条目跳到对应模块。
 import { Store, isConsumedRepeat } from '../store/Store';
-import { C, S, tk, tc } from '../utils/Theme';
+import { paletteAt, S, tk, tc } from '../utils/Theme';
 import { D } from '../utils/DateUtil';
 import { Card } from '../components/Card';
 import { Chip } from '../components/Widgets';
@@ -51,7 +51,7 @@ interface KindDef {
 const KINDS: KindDef[] = [
   { key: 'all', label: '全部', icon: 'grid', color: '#237A76', bg: '#E1F7F5', asc: false },
   { key: 'task', label: '任务', icon: 'tasks', color: '#3D729F', bg: '#EAF3FD', asc: true },
-  { key: 'note', label: '灵感', icon: 'note', color: '#7360AD', bg: '#F3EEFE', asc: false },
+  { key: 'note', label: '记录', icon: 'note', color: '#7360AD', bg: '#F3EEFE', asc: false },
   { key: 'event', label: '日程', icon: 'calendar', color: '#925C73', bg: '#FDEBF3', asc: true },
   { key: 'project', label: '项目', icon: 'folder', color: '#876B2D', bg: '#FDF3DC', asc: true },
   { key: 'review', label: '复盘', icon: 'undo', color: '#985E4B', bg: '#FBEDE9', asc: false },
@@ -61,7 +61,7 @@ const KINDS: KindDef[] = [
 @Component
 export struct AllView {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @State tick: number = 0;
   @State tasks: Task[] = [];
   @State notes: Note[] = [];
@@ -76,6 +76,8 @@ export struct AllView {
   @State rows: AllItem[] = [];
   @State totalRows: number = 0;
   onNavigate: (page: string) => void = () => {};
+  // v5.17：二级页返回（Index 传进来的）
+  onBack: () => void = () => {};
   private unsub: () => void = () => {};
 
   aboutToAppear(): void {
@@ -107,6 +109,15 @@ export struct AllView {
   }
 
   // ── 分类 ──────────────────────────────────────────────
+  /** v5.7：分类图标色 / 底色跟着配色方案走（索引 0=全部 1=任务 … 6=习惯） */
+  private kindColor(i: number): string {
+    return paletteAt(this.pal, 'kindFg', i);
+  }
+
+  private kindBgColor(i: number): string {
+    return paletteAt(this.pal, 'kindBg', i);
+  }
+
   private kindDef(): KindDef {
     for (const k of KINDS) {
       if (k.key === this.kind) { return k; }
@@ -185,9 +196,8 @@ export struct AllView {
     if (diff === -1) { return time.length > 0 ? `昨天 ${time}` : '昨天'; }
     if (diff > 1 && diff < 7) { return `${diff} 天后`; }
     if (diff < -1 && diff > -7) { return `${-diff} 天前`; }
-    const mo: number = Number(day.slice(5, 7));
-    const da: number = Number(day.slice(8, 10));
-    const md: string = `${mo}/${da}`;
+    // v5.15：日期格式跟全 App 统一（以前这里是「11/1」，别处是「11月17日」）
+    const md: string = D.md(day);
     if (time.length > 0) { return `${md} ${time}`; }
     return md;
   }
@@ -239,7 +249,7 @@ export struct AllView {
       out.push({
         key: `t-${t.id}`, kind: 'task', kindLabel: '任务', title: t.title,
         sub: sub, dateText: this.dateLabel(stamp), stamp: stamp,
-        icon: 'tasks', color: '#3D729F', bg: '#EAF3FD', target: 'tasks', done: done
+        icon: 'tasks', color: this.kindColor(1), bg: this.kindBgColor(1), target: 'tasks', done: done
       } as AllItem);
     }
     return this.orderTasks(out);
@@ -266,15 +276,15 @@ export struct AllView {
     }
     for (const n of notes) {
       const stamp: string = this.noteStamp(n);
-      let sub: string = n.source !== null && n.source.length > 0 ? n.source : '记录灵感';
+      let sub: string = n.source !== null && n.source.length > 0 ? n.source : '随手记';
       if (n.archived === 1) { sub += ' · 已归档'; }
       if (n.pinned === 1) { sub += ' · 置顶'; }
       const title: string = n.title !== null && n.title.trim().length > 0
         ? n.title.trim() : (n.content !== null && n.content.trim().length > 0 ? n.content.trim().substring(0, 18) : '（无标题）');
       out.push({
-        key: `n-${n.id}`, kind: 'note', kindLabel: '灵感', title: title,
+        key: `n-${n.id}`, kind: 'note', kindLabel: '记录', title: title,
         sub: sub, dateText: this.dateLabel(stamp), stamp: stamp,
-        icon: 'note', color: '#7360AD', bg: '#F3EEFE', target: 'notes', done: false
+        icon: 'note', color: this.kindColor(2), bg: this.kindBgColor(2), target: 'notes', done: false
       } as AllItem);
     }
     return this.sortByStamp(out);
@@ -292,7 +302,7 @@ export struct AllView {
       out.push({
         key: `e-${e.id}`, kind: 'event', kindLabel: '日程', title: e.title,
         sub: sub, dateText: this.dateLabel(stamp), stamp: stamp,
-        icon: 'calendar', color: '#925C73', bg: '#FDEBF3', target: 'calendar', done: past
+        icon: 'calendar', color: this.kindColor(3), bg: this.kindBgColor(3), target: 'calendar', done: past
       } as AllItem);
     }
     return this.orderEvents(out);
@@ -303,12 +313,18 @@ export struct AllView {
     for (const p of this.projects) {
       const stamp: string = p.target_date !== null && p.target_date.length > 0
         ? p.target_date : p.created_at;
-      let sub: string = p.status !== null && p.status.length > 0 ? p.status : '进行中';
-      if (p.total > 0) { sub += ` · ${p.done}/${p.total} 项完成`; }
+      // v5.13：原来直接把数据库里的 p.status 当文案显示（英文 active / archived）。
+      //   换成中文，并把英文值也映射过来，免得库里存了英文就漏出来。
+      const rawStatus: string = p.status !== null && p.status.length > 0 ? p.status : '';
+      let sub: string = '进行中';
+      if (rawStatus === 'archived' || rawStatus === '已归档') { sub = '已归档'; }
+      else if (rawStatus === 'done' || rawStatus === 'completed' || rawStatus === '已完成') { sub = '已完成'; }
+      else if (rawStatus.length > 0 && rawStatus !== 'active') { sub = rawStatus; }
+      if (p.total > 0) { sub += ` · ${p.done}/${p.total} 件完成`; }
       out.push({
         key: `p-${p.id}`, kind: 'project', kindLabel: '项目', title: p.name,
         sub: sub, dateText: this.dateLabel(stamp), stamp: stamp,
-        icon: 'folder', color: '#876B2D', bg: '#FDF3DC', target: 'projects', done: false
+        icon: 'folder', color: this.kindColor(4), bg: this.kindBgColor(4), target: 'projects', done: false
       } as AllItem);
     }
     return this.sortByStamp(out);
@@ -327,7 +343,7 @@ export struct AllView {
       out.push({
         key: `r-${r.id}`, kind: 'review', kindLabel: '复盘', title: r.date,
         sub: sub, dateText: this.dateLabel(stamp), stamp: stamp,
-        icon: 'doc', color: '#985E4B', bg: '#FBEDE9', target: 'review', done: false
+        icon: 'doc', color: this.kindColor(5), bg: this.kindBgColor(5), target: 'review', done: false
       } as AllItem);
     }
     return this.sortByStamp(out);
@@ -352,7 +368,7 @@ export struct AllView {
       out.push({
         key: `h-${h.id}`, kind: 'habit', kindLabel: '习惯', title: h.name,
         sub: sub, dateText: this.dateLabel(h.created_at), stamp: h.created_at,
-        icon: 'flame', color: '#3F796C', bg: '#E6F8F2', target: 'habits', done: false
+        icon: 'flame', color: this.kindColor(6), bg: this.kindBgColor(6), target: 'habits', done: false
       } as AllItem);
     }
     return out;
@@ -439,28 +455,28 @@ export struct AllView {
 
   // ── 视图 ──────────────────────────────────────────────
   @Builder row(it: AllItem) {
-    Row({ space: 9 }) {
+    Row({  space: S.spaceXl  }) {
       Row() {
-        SymbolGlyph(sym(it.icon)).fontSize(14).fontColor([it.color])
+        SymbolGlyph(sym(it.icon)).fontSize(S.cardTitleSize).fontColor([it.color])
       }
       .width(30)
       .height(30)
-      .borderRadius(10)
+      .borderRadius(S.radiusBtn)
       .backgroundColor(it.bg)
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
 
-      Column({ space: 3 }) {
-        Row({ space: 5 }) {
+      Column({  space: S.spaceSm  }) {
+        Row({  space: S.spaceMd  }) {
           Text(it.kindLabel)
-            .fontSize(8.5)
+            .fontSize(S.microSize)
             .fontColor(it.color)
-            .padding({ left: 5, right: 5, top: 1, bottom: 1 })
-            .borderRadius(4)
+            .padding({  left: S.spaceMd, right: S.spaceMd, top: S.spaceXs, bottom: S.spaceXs  })
+            .borderRadius(S.radiusXs)
             .backgroundColor(it.bg)
           Text(it.title)
-            .fontSize(12)
-            .fontColor(tk(this.dark, 'text'))
+            .fontSize(S.smallSize)
+            .fontColor(tk(this.pal, 'text'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
@@ -469,8 +485,8 @@ export struct AllView {
         .alignItems(VerticalAlign.Center)
 
         Text(it.sub)
-          .fontSize(9.5)
-          .fontColor(tk(this.dark, 'textHint'))
+          .fontSize(S.tinySize)
+          .fontColor(tk(this.pal, 'textHint'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
@@ -479,19 +495,21 @@ export struct AllView {
       .alignItems(HorizontalAlign.Start)
 
       Text(it.dateText)
-        .fontSize(9.5)
-        .fontColor(tk(this.dark, 'textFaint'))
+        .fontSize(S.tinySize)
+        .fontColor(tk(this.pal, 'textFaint'))
         .maxLines(1)
     }
     .width('100%')
-    .padding({ top: 9, bottom: 9 })
-    .border({ width: { bottom: 1 }, color: tc(this.dark, '#F2F7FB', 2) })
+    .padding({  top: S.spaceXl, bottom: S.spaceXl  })
+    .border({ width: { bottom: 1 }, color: tc(this.pal, '#F2F7FB', 2) })
     .alignItems(VerticalAlign.Center)
     .onClick(() => { this.onNavigate(it.target); })
   }
 
   @Builder pageTop() {
     TopBar({
+      backLabel: '返回',
+      onBack: () => { this.onBack(); },
       onSearch: () => { this.onNavigate('search'); },
       onCalendar: () => { this.onNavigate('calendar'); }
     })
@@ -501,22 +519,20 @@ export struct AllView {
   build() {
     Scroll() {
       Column() {
-        Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+        Text(`${this.tick}`).fontSize(S.hiddenSize).width(1).height(1).opacity(0)
 
         this.pageTop()
 
         // page-head
-        Column({ space: 5 }) {
-          Text('ALL · 全部内容')
-            .fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
+        Column({  space: S.spaceMd  }) {
+          Text('ALL · 所有内容')
+            .fontSize(S.tinySize).fontColor(tc(this.pal, '#9DB0C1', 1)).letterSpacing(1.6)
           Text('所有东西，都在这儿。')
-            .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
-          Text('任务、灵感、日程、项目、复盘、习惯，一处看全，每条都带日期。')
-            .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+            .fontSize(S.sectionSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text')).letterSpacing(-0.2)
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
-        .padding({ top: 14, bottom: 12 })
+        .padding({  top: S.spaceXl, bottom: S.spaceXl  })
 
         // 分类切换
         Flex({ wrap: FlexWrap.Wrap }) {
@@ -529,52 +545,58 @@ export struct AllView {
           }, (k: KindDef) => `ak-${k.key}`)
         }
         .width('100%')
-        .margin({ bottom: 10 })
+        .margin({  bottom: S.spaceXl  })
 
         // 排序说明 + 切换
-        Row({ space: 8 }) {
+        Row({  space: S.spaceLg  }) {
           Text(this.ruleText())
-            .fontSize(9.5)
-            .fontColor(tk(this.dark, 'textHint'))
+            .fontSize(S.tinySize)
+            .fontColor(tk(this.pal, 'textHint'))
             .layoutWeight(1)
             .maxLines(2)
           // v4.7：习惯是固定顺序，排序按钮点了没反应（死控件）—— 干脆不显示
           if (this.kind !== 'habit') {
-            Row({ space: 4 }) {
-              SymbolGlyph(sym('undo')).fontSize(14).fontColor([tk(this.dark, 'textSub')])
-              Text(this.dirText())
-                .fontSize(9.5)
-                .fontColor(tc(this.dark, '#5E7183', 1))
+            // v5.15 可访问性：排序切换胶囊原来只有 ~22 高 ⇒ 外层套 40 高的透明热区，胶囊本身不变
+            Row() {
+              Row({  space: S.spaceSm  }) {
+                SymbolGlyph(sym('undo')).fontSize(S.cardTitleSize).fontColor([tk(this.pal, 'textSub')])
+                Text(this.dirText())
+                  .fontSize(S.tinySize)
+                  .fontColor(tc(this.pal, '#5E7183', 1))
+              }
+              .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceSm, bottom: S.spaceSm  })
+              .borderRadius(S.radiusPill)
+              .backgroundColor(tk(this.pal, 'card'))
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .alignItems(VerticalAlign.Center)
             }
-            .padding({ left: 9, right: 9, top: 4, bottom: 4 })
-            .borderRadius(999)
-            .backgroundColor(tk(this.dark, 'card'))
-            .border({ width: 1, color: tk(this.dark, 'line') })
-            .alignItems(VerticalAlign.Center)
+            .height(40)
+            .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
             .onClick(() => { this.toggleDir(); })
+            .accessibilityText('切换排序方式')
           }
         }
         .width('100%')
-        .margin({ bottom: 10 })
+        .margin({  bottom: S.spaceXl  })
 
         // 列表
         Card({
           title: this.kindDef().label,
           sub: this.totalRows > this.rows.length
-            ? `显示 ${this.rows.length} / ${this.totalRows} 条（只显示前 200 条）`
-            : `${this.rows.length} 条`,
+            ? `显示 ${this.rows.length} / ${this.totalRows} 项（只显示前 200 项）`
+            : `${this.rows.length} 项`,
           bodyPadTop: 4, bodyPadBottom: 8
         }) {
-          Column({ space: 0 }) {
+          Column({  space: 0  }) {
             if (this.rows.length === 0) {
-              Column({ space: 5 }) {
+              Column({  space: S.spaceMd  }) {
                 Text(this.emptyText())
-                  .fontSize(12.5).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#5E7183', 1))
+                  .fontSize(S.bodySize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#5E7183', 1))
                 Text('换个分类看看，或者回到首页记一条。')
-                  .fontSize(10.5).fontColor(tc(this.dark, '#A8B8C6', 1))
+                  .fontSize(S.subSize).fontColor(tc(this.pal, '#A8B8C6', 1))
               }
               .width('100%')
-              .padding({ top: 24, bottom: 24 })
+              .padding({  top: 24, bottom: 24  })
               .alignItems(HorizontalAlign.Center)
             } else {
               ForEach(this.rows, (it: AllItem) => {
@@ -587,14 +609,17 @@ export struct AllView {
         }
 
         Text('点任意一条，跳到对应的地方。')
-          .fontSize(9).fontColor(tc(this.dark, '#B7C7D4', 1))
+          .fontSize(S.tinySize).fontColor(tc(this.pal, '#B7C7D4', 1))
           .width('100%')
-          .padding({ top: 12, bottom: 4 })
+          .padding({  top: S.space2Xl, bottom: S.spaceSm  })
       }
       .width('100%')
-      .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+      .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop  })
       .alignItems(HorizontalAlign.Start)
     }
+      // v5.16：滚动时把右下角悬浮按钮藏起来（它正好压在内容上），停了就回来
+      .onDidScroll((x: number, y: number) => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+      .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
     .onScrollEdge(onEdgeScrolled)
     .onWillScroll(onEdgeWillScroll)
     .align(Alignment.TopStart)
@@ -602,7 +627,8 @@ export struct AllView {
     .height('100%')
     .scrollBar(BarState.Off)
     .constraintSize({ maxWidth: 1240 })
-    .backgroundColor(tk(this.dark, 'bg'))
+    // v5.0：页面底色改成透明，让 Index 根 Stack 上的大光斑透出来
+    .backgroundColor(Color.Transparent)
     .edgeEffect(EdgeEffect.Spring)
   }
 }

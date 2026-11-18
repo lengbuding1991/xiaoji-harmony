@@ -11,14 +11,14 @@
  *   .acts            border-top 1px #E6EFF8 + b1 主按钮 14px radius 12 / b2 次要 13px radius 12
  *   .form-err        #B4483C on #FDF0EE, border #F8DCD7, radius 10
  */
-import { C, onFill, tc, tk, tkInk } from '../utils/Theme';
+import { brandGradient, onFill, S, tc, tk, tkInk } from '../utils/Theme';
 import { sym } from './Icon';
 
 /** 抽屉/弹窗标题块：h3 17px 粗体 + 9.5px 灰色副标题 + 可选右上「×」关闭按钮 */
 @Component
 export struct SheetHead {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop title: string = '';
   @Prop sub: string = '';
   @Prop showClose: boolean = false;
@@ -27,29 +27,36 @@ export struct SheetHead {
 
   build() {
     Stack({ alignContent: Alignment.TopEnd }) {
-      Column({ space: 3 }) {
+      Column({  space: S.spaceSm  }) {
         Text(this.title)
-          .fontSize(17)
+          .fontSize(S.sectionSize)
           .fontWeight(FontWeight.Bold)
-          .fontColor(tk(this.dark, 'text'))
+          .fontColor(tk(this.pal, 'text'))
         if (this.sub.length > 0) {
           Text(this.sub)
-            .fontSize(9.5)
-            .fontColor(tk(this.dark, 'textHint'))
+            .fontSize(S.tinySize)
+            .fontColor(tk(this.pal, 'textHint'))
         }
       }
       .width('100%')
       .alignItems(HorizontalAlign.Start)
-      .padding({ right: this.showClose ? 34 : 0, bottom: 4 })
+      .padding({  right: this.showClose ? 40 : 0, bottom: S.spaceSm  })
 
       if (this.showClose) {
+        // v5.15 可访问性：关闭按钮原来只有 28×28 ⇒ 外层套 40×40 的透明热区，
+        //   里层那个 28×28 的灰底圆角块保持原样（视觉不变）。
         Row() {
-          SymbolGlyph(sym('close')).fontSize(13).fontColor([tc(this.dark, '#8FA2B3', 1)])
+          Row() {
+            SymbolGlyph(sym('close')).fontSize(S.midSize).fontColor([tc(this.pal, '#8FA2B3', 1)])
+          }
+          .width(28).height(28).borderRadius(S.radiusInner)
+          .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
+          .backgroundColor(tc(this.pal, '#F2F7FB', 0))
         }
-        .width(28).height(28).borderRadius(14)
+        .width(40).height(40)
         .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
-        .backgroundColor(tc(this.dark, '#F2F7FB', 0))
         .onClick(() => { this.onClose(); })
+        .accessibilityText('关闭')
       }
     }
     .width('100%')
@@ -60,7 +67,7 @@ export struct SheetHead {
 @Component
 export struct FormBox {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop label: string = '';
   // 标签小图标（对齐工作台 .lf-label：重复用 Repeat、提醒用 Bell，图标 11px 跟文字同一行）
   @Prop icon: string = '';
@@ -71,15 +78,15 @@ export struct FormBox {
   }
 
   build() {
-    Column({ space: 5 }) {
+    Column({  space: S.spaceMd  }) {
       if (this.label.length > 0) {
-        Row({ space: 4 }) {
+        Row({  space: S.spaceSm  }) {
           if (this.icon.length > 0) {
-            SymbolGlyph(sym(this.icon)).fontSize(14).fontColor([tc(this.dark, '#8FA2B3', 1)])
+            SymbolGlyph(sym(this.icon)).fontSize(S.cardTitleSize).fontColor([tc(this.pal, '#8FA2B3', 1)])
           }
           Text(this.label)
-            .fontSize(9.5)
-            .fontColor(tc(this.dark, '#8FA2B3', 1))
+            .fontSize(S.tinySize)
+            .fontColor(tc(this.pal, '#8FA2B3', 1))
         }
         .alignItems(VerticalAlign.Center)
       }
@@ -94,24 +101,25 @@ export struct FormBox {
 @Component
 export struct SegTabs {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop options: string[] = [];
   @Prop sel: number = 0;
   onPick: (i: number) => void = () => {
   };
 
   build() {
-    Row({ space: 6 }) {
+    Row({  space: S.spaceMd  }) {
       ForEach(this.options, (o: string, i: number) => {
         Text(o)
-          .fontSize(12)
+          .fontSize(S.smallSize)
           .layoutWeight(1)
-          .height(32)
+          // v5.15 可访问性：分段按钮高 32 → 40（手指最小可点区域）
+          .height(40)
           .textAlign(TextAlign.Center)
-          .borderRadius(9)
-          .backgroundColor(i === this.sel ? tk(this.dark, 'brandSoft') : tc(this.dark, '#F8FBFE', 0))
-          .border({ width: 1, color: i === this.sel ? tk(this.dark, 'brandLine') : tk(this.dark, 'line') })
-          .fontColor(i === this.sel ? tkInk(this.dark, 'brandDeep') : tc(this.dark, '#7E93A6', 1))
+          .borderRadius(S.radiusSm)
+          .backgroundColor(i === this.sel ? tk(this.pal, 'brandSoft') : tc(this.pal, '#F8FBFE', 0))
+          .border({ width: 1, color: i === this.sel ? tk(this.pal, 'brandLine') : tk(this.pal, 'line') })
+          .fontColor(i === this.sel ? tkInk(this.pal, 'brandDeep') : tc(this.pal, '#7E93A6', 1))
           .fontWeight(i === this.sel ? FontWeight.Medium : FontWeight.Normal)
           .onClick(() => {
             this.onPick(i);
@@ -129,7 +137,7 @@ export struct SegTabs {
 @Component
 export struct PickerBox {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop text: string = '';
   @Prop muted: boolean = false;
   @Prop options: string[] = [];
@@ -152,30 +160,31 @@ export struct PickerBox {
       }, (o: string, i: number) => `pk-${o}-${i}`)
     }
     .font({ size: 12, weight: FontWeight.Normal })
-    .fontColor(tk(this.dark, 'text'))
+    .fontColor(tk(this.pal, 'text'))
     .radius(12)
-    .backgroundColor(tc(this.dark, '#FFFFFF', 0))
+    .backgroundColor(tc(this.pal, '#FFFFFF', 0))
   }
 
   build() {
     Row() {
       Text(this.text)
-        .fontSize(12)
-        .fontColor(this.muted ? tk(this.dark, 'textHint') : tk(this.dark, 'text'))
+        .fontSize(S.smallSize)
+        .fontColor(this.muted ? tk(this.pal, 'textHint') : tk(this.pal, 'text'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
       // v4.23：arrow_down 在 fs14 墨迹 10.7x11.7vp（盒子 14x14 >= 12vp、墨迹 >= 8vp）
       SymbolGlyph(sym('down'))
-        .fontSize(14)
-        .fontColor([tk(this.dark, 'textHint')])
+        .fontSize(S.cardTitleSize)
+        .fontColor([tk(this.pal, 'textHint')])
     }
     .width('100%')
-    .height(36)
-    .padding({ left: 11, right: 9 })
-    .backgroundColor(tc(this.dark, '#F8FBFE', 0))
-    .borderRadius(11)
-    .border({ width: 1, color: tk(this.dark, 'line') })
+    // v5.15 可访问性：下拉框高 36 → 40（手指最小可点区域）
+    .height(40)
+    .padding({  left: S.space2Xl, right: S.spaceXl  })
+    .backgroundColor(tc(this.pal, '#F8FBFE', 0))
+    .borderRadius(S.radiusBtn)
+    .border({ width: 1, color: tk(this.pal, 'line') })
     .bindMenu(this.menuBuilder(), {
       placement: Placement.Bottom
     })
@@ -186,7 +195,7 @@ export struct PickerBox {
 @Component
 export struct DateBox {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop text: string = '';
   @Prop muted: boolean = true;
   @Prop icon: string = 'calendar';
@@ -196,21 +205,22 @@ export struct DateBox {
   build() {
     Row() {
       Text(this.text)
-        .fontSize(12)
-        .fontColor(this.muted ? tk(this.dark, 'textHint') : tk(this.dark, 'text'))
+        .fontSize(S.smallSize)
+        .fontColor(this.muted ? tk(this.pal, 'textHint') : tk(this.pal, 'text'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
       SymbolGlyph(sym(this.icon))
-        .fontSize(14)
-        .fontColor([tk(this.dark, 'textFaint')])
+        .fontSize(S.cardTitleSize)
+        .fontColor([tk(this.pal, 'textFaint')])
     }
     .width('100%')
-    .height(36)
-    .padding({ left: 11, right: 9 })
-    .backgroundColor(tc(this.dark, '#F8FBFE', 0))
-    .borderRadius(11)
-    .border({ width: 1, color: tk(this.dark, 'line') })
+    // v5.15 可访问性：日期/时间框高 36 → 40（手指最小可点区域）
+    .height(40)
+    .padding({  left: S.space2Xl, right: S.spaceXl  })
+    .backgroundColor(tc(this.pal, '#F8FBFE', 0))
+    .borderRadius(S.radiusBtn)
+    .border({ width: 1, color: tk(this.pal, 'line') })
     .onClick(() => {
       this.onTap();
     })
@@ -221,19 +231,21 @@ export struct DateBox {
 @Component
 export struct FormErr {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop msg: string = '';
 
   build() {
     if (this.msg.length > 0) {
       Text(this.msg)
-        .fontSize(11.5)
-        .fontColor(tc(this.dark, '#B4483C', 1))
+        // v5.15 可访问性：错误提示原来 11px 灰红字 ⇒ 字号 ≥12（S.smallSize），
+        //   颜色换成调色板里的 danger（深色模式下也够对比）。
+        .fontSize(S.smallSize)
+        .fontColor(tkInk(this.pal, 'danger'))
         .width('100%')
-        .padding({ left: 12, right: 12, top: 9, bottom: 9 })
-        .backgroundColor(tc(this.dark, '#FDF0EE', 0))
-        .borderRadius(10)
-        .border({ width: 1, color: tc(this.dark, tc(this.dark, '#F8DCD7', 2), 2) })
+        .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+        .backgroundColor(tk(this.pal, 'dangerSoft'))
+        .borderRadius(S.radiusBtn)
+        .border({ width: 1, color: tk(this.pal, 'dangerSoft') })
     }
   }
 }
@@ -242,13 +254,13 @@ export struct FormErr {
 @Component
 export struct HintLine {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop text: string = '';
 
   build() {
     Text(this.text)
-      .fontSize(8.5)
-      .fontColor(tk(this.dark, 'textHint'))
+      .fontSize(S.microSize)
+      .fontColor(tk(this.pal, 'textHint'))
       .width('100%')
       .lineHeight(15)
   }
@@ -258,7 +270,7 @@ export struct HintLine {
 @Component
 export struct SheetActs {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop primaryText: string = '保存';
   @Prop secondaryText: string = '取消';
   @Prop dangerText: string = '';
@@ -273,45 +285,42 @@ export struct SheetActs {
   build() {
     // 对齐 globals.css 手机端 .acts：删除(固定) + 取消(固定) + 保存(flex:1 撑满)
     // 没有 Blank()——它会和 layoutWeight(1) 争抢剩余空间，把按钮挤出屏幕。
-    Row({ space: 8 }) {
+    Row({  space: S.spaceLg  }) {
       if (this.dangerText.length > 0) {
         Text(this.dangerText)
-          .fontSize(13)
-          .fontColor(tc(this.dark, '#B0563C', 1))
+          .fontSize(S.midSize)
+          .fontColor(tc(this.pal, '#B0563C', 1))
           .height(44)
-          .padding({ left: 16, right: 16 })
-          .borderRadius(12)
-          .backgroundColor(tc(this.dark, '#FEF3F0', 0))
-          .border({ width: 1, color: tc(this.dark, tc(this.dark, '#F6D3CB', 2), 2) })
+          .padding({  left: S.space4Xl, right: S.space4Xl  })
+          .borderRadius(S.radiusInner)
+          .backgroundColor(tc(this.pal, '#FEF3F0', 0))
+          .border({ width: 1, color: tc(this.pal, tc(this.pal, '#F6D3CB', 2), 2) })
           .textAlign(TextAlign.Center)
           .onClick(() => {
             this.onDanger();
           })
       }
       Text(this.secondaryText)
-        .fontSize(13)
-        .fontColor(tc(this.dark, '#6A7F92', 1))
+        .fontSize(S.midSize)
+        .fontColor(tc(this.pal, '#6A7F92', 1))
         .height(44)
-        .padding({ left: 16, right: 16 })
-        .borderRadius(12)
-        .backgroundColor(tk(this.dark, 'card'))
-        .border({ width: 1, color: tk(this.dark, 'line') })
+        .padding({  left: S.space4Xl, right: S.space4Xl  })
+        .borderRadius(S.radiusInner)
+        .backgroundColor(tk(this.pal, 'card'))
+        .border({ width: 1, color: tk(this.pal, 'line') })
         .textAlign(TextAlign.Center)
         .onClick(() => {
           this.onSecondary();
         })
       Text(this.busy ? '保存中…' : this.primaryText)
-        .fontSize(14)
+        .fontSize(S.cardTitleSize)
         .fontWeight(FontWeight.Medium)
-        .fontColor(onFill(this.dark))
+        .fontColor(onFill(this.pal))
         .height(44)
         .layoutWeight(1)
-        .borderRadius(12)
+        .borderRadius(S.radiusInner)
         .textAlign(TextAlign.Center)
-        .linearGradient({
-          angle: 140,
-          colors: [['#1C7C74', 0], ['#1B7799', 1]]
-        })
+        .linearGradient(brandGradient(this.pal))
         .opacity(this.busy ? 0.6 : 1)
         .onClick(() => {
           if (!this.busy) {
@@ -320,7 +329,7 @@ export struct SheetActs {
         })
     }
     .width('100%')
-    .padding({ left: 18, right: 18, top: 12, bottom: 12 })
-    .border({ width: { top: 1 }, color: tk(this.dark, 'line') })
+    .padding({  left: S.space5Xl, right: S.space5Xl, top: S.space2Xl, bottom: S.space2Xl  })
+    .border({ width: { top: 1 }, color: tk(this.pal, 'line') })
   }
 }

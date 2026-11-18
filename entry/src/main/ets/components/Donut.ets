@@ -1,6 +1,6 @@
 // 环形图：对齐工作台 .donut（132×132，conic-gradient + inset:26px 白心）
 // 用 sweepGradient 实现 conic-gradient，比 Canvas 更接近原版并且没有重绘开销。
-import { C, tk, tc } from '../utils/Theme';
+import { S, tc, tk } from '../utils/Theme';
 
 export interface RingPiece {
   label: string;
@@ -16,7 +16,7 @@ export function ringPiece(label: string, value: number, color: string, pct: numb
 @Component
 export struct Donut {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop pieces: RingPiece[] = [];
   @Prop boxSize: number = 132;
   @Prop holeSize: number = 26;
@@ -27,8 +27,8 @@ export struct Donut {
   private colors(): Array<[ResourceColor, number]> {
     const list: Array<[ResourceColor, number]> = [];
     if (this.pieces.length === 0) {
-      list.push([tk(this.dark, 'heat0'), 0]);
-      list.push([tk(this.dark, 'heat0'), 1]);
+      list.push([tk(this.pal, 'heat0'), 0]);
+      list.push([tk(this.pal, 'heat0'), 1]);
       return list;
     }
     let acc: number = 0;
@@ -56,16 +56,16 @@ export struct Donut {
         .width(this.boxSize - this.holeSize * 2)
         .height(this.boxSize - this.holeSize * 2)
         .borderRadius((this.boxSize - this.holeSize * 2) / 2)
-        .backgroundColor(tk(this.dark, 'card'))
+        .backgroundColor(tk(this.pal, 'card'))
 
       if (this.centerBig.length > 0) {
-        Column({ space: 1 }) {
+        Column({  space: S.spaceXs  }) {
           Text(this.centerBig)
-            .fontSize(19)
+            .fontSize(S.dialogSize)
             .fontWeight(FontWeight.Bold)
-            .fontColor(tk(this.dark, 'text'))
+            .fontColor(tk(this.pal, 'text'))
           if (this.centerSmall.length > 0) {
-            Text(this.centerSmall).fontSize(8).fontColor(tk(this.dark, 'textHint'))
+            Text(this.centerSmall).fontSize(S.microSize).fontColor(tk(this.pal, 'textHint'))
           }
         }
         .alignItems(HorizontalAlign.Center)
@@ -80,25 +80,23 @@ export struct Donut {
 @Component
 export struct DonutLegend {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop pieces: RingPiece[] = [];
 
   build() {
-    Column({ space: 6 }) {
+    Column({  space: S.spaceMd  }) {
       ForEach(this.pieces, (p: RingPiece) => {
-        Row({ space: 7 }) {
-          Row().width(7).height(7).borderRadius(4).backgroundColor(p.color)
-          Text(p.label).fontSize(S_LABEL).fontColor(tc(this.dark, '#5E7183', 1))
+        Row({  space: S.spaceLg  }) {
+          Row().width(7).height(7).borderRadius(S.radiusXs).backgroundColor(p.color)
+          Text(p.label).fontSize(S.subSize).fontColor(tc(this.pal, '#5E7183', 1))
           Blank()
-          Text(`${p.pct}%`).fontSize(9.5).fontColor(tc(this.dark, '#8FA2B3', 1))
+          Text(`${p.pct}%`).fontSize(S.tinySize).fontColor(tc(this.pal, '#8FA2B3', 1))
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)
-      }, (p: RingPiece) => p.label)
+      }, (p: RingPiece) => `${p.label}-${this.pal}`)
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
   }
 }
-
-const S_LABEL: number = 10.5;

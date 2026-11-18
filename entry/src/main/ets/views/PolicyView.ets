@@ -2,7 +2,8 @@
 //
 // 上架必须能在 App 里看到完整协议正文，所以正文写在这里，不依赖网络。
 // 设置页 → 「隐私与协议」→ 这里；首启隐私弹窗里点《用户协议》《隐私政策》也会到这里。
-import { C, onFill, S, tc, tk } from '../utils/Theme';
+import { onFill, S, tc, tk } from '../utils/Theme';
+import { R } from '../utils/Responsive';
 import { TopBar } from '../components/TopBar';
 import { onEdgeScrolled, onEdgeWillScroll } from '../utils/EdgeHint';
 
@@ -14,21 +15,27 @@ interface Sec {
 @Component
 export struct PolicyView {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @State tab: number = 0;
   onNavigate: (page: string) => void = () => {};
+  // v5.17：二级页返回（Index 传进来的）
+  onBack: () => void = () => {};
 
   private readonly terms: Sec[] = [
     {
       h: '一、协议的接受',
+      // v5.13：原来这里写着「在你勾选同意并点击『同意并开始使用』之前，你不能正常使用本 App」
+      //   「若你不同意，请点击『不同意并退出』」—— 首启隐私弹窗 v4.25 已经删掉了，
+      //   这两个按钮根本不存在，协议却让人去点。改成如实说明。
       p: '本协议是你与「小记」（以下简称「本 App」）之间关于使用本 App 所订立的协议。' +
-        '在你勾选同意并点击「同意并开始使用」之前，你不能正常使用本 App。' +
-        '若你不同意本协议，请点击「不同意并退出」并停止使用本 App。'
+        '首次打开本 App 即表示你已知悉本协议与隐私政策。' +
+        '你可以随时在「设置 → 隐私与协议」中重新查看本协议与隐私政策；' +
+        '若你不同意，可以随时卸载本 App，卸载后本 App 内的全部数据会一并删除。'
     },
     {
       h: '二、服务内容',
-      p: '本 App 为一款纯本地的个人成长管理工具，提供任务面板、日历安排、记录灵感、每日习惯、' +
-        '项目进度、每日复盘、数据洞察、全局搜索与提醒等功能。' +
+      p: '本 App 为一款纯本地的个人成长管理工具，提供成长总览、任务面板、日历安排、随手记、' +
+        '习惯打卡、我的项目、复盘笔记、所有内容与搜索等功能，顶部铃铛会列出需要你处理的事项。' +
         '本 App 为单机应用，不提供在线账号体系、不提供服务器端存储、不提供任何收费的虚拟物品。'
     },
     {
@@ -111,7 +118,7 @@ export struct PolicyView {
     },
     {
       h: '七、未成年人保护',
-      p: '本 App 不面向未满 14 周岁的未成年人提供在线服务。若你是未成年人的监护人，' +
+      p: '本 App 不面向未满 14 周岁的未成年人提供本服务。若你是未成年人的监护人，' +
         '请监督其使用，并在必要时及时删除本 App 中的相关数据。'
     },
     {
@@ -132,15 +139,15 @@ export struct PolicyView {
   @Builder
   tabChip(label: string, idx: number) {
     Text(label)
-      .fontSize(11.5)
+      .fontSize(S.labelSize)
       .fontWeight(this.tab === idx ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.tab === idx ? onFill(this.dark) : tc(this.dark, '#5E7183', 1))
+      .fontColor(this.tab === idx ? onFill(this.pal) : tc(this.pal, '#5E7183', 1))
       .textAlign(TextAlign.Center)
       .layoutWeight(1)
       .height(34)
-      .borderRadius(11)
-      .backgroundColor(this.tab === idx ? tk(this.dark, 'brand') : tc(this.dark, '#FFFFFF', 0))
-      .border({ width: 1, color: this.tab === idx ? tk(this.dark, 'brand') : tk(this.dark, 'line') })
+      .borderRadius(S.radiusBtn)
+      .backgroundColor(this.tab === idx ? tk(this.pal, 'brand') : tc(this.pal, '#FFFFFF', 0))
+      .border({ width: 1, color: this.tab === idx ? tk(this.pal, 'brand') : tk(this.pal, 'line') })
       .onClick(() => { this.tab = idx; })
   }
 
@@ -148,6 +155,8 @@ export struct PolicyView {
     Scroll() {
       Column() {
         TopBar({
+      backLabel: '返回',
+      onBack: () => { this.onBack(); },
           showBell: false,
           showSearch: false,
           showCalendar: false,
@@ -156,49 +165,52 @@ export struct PolicyView {
         })
           .width('100%')
 
-        Column({ space: 5 }) {
-          Text('LEGAL · 协议与隐私').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
-          Text('用户协议与隐私政策').fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
-          Text('更新日期：2026 年 11 月 8 日').fontSize(10).fontColor(tk(this.dark, 'textSub'))
+        Column({  space: S.spaceMd  }) {
+          Text('LEGAL · 协议与隐私').fontSize(S.tinySize).fontColor(tc(this.pal, '#9DB0C1', 1)).letterSpacing(1.6)
+          Text('用户协议与隐私政策').fontSize(S.sectionSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text')).letterSpacing(-0.2)
+          Text('更新日期：2026 年 11 月 8 日').fontSize(S.labelSize).fontColor(tk(this.pal, 'textSub'))
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
-        .padding({ top: 14, bottom: 12 })
+        .padding({  top: S.spaceXl, bottom: S.spaceXl  })
 
-        Row({ space: 8 }) {
+        Row({  space: S.spaceLg  }) {
           this.tabChip('用户协议', 0)
           this.tabChip('隐私政策', 1)
         }
         .width('100%')
-        .margin({ bottom: 12 })
+        .margin({  bottom: S.space2Xl  })
 
-        Column({ space: 12 }) {
+        Column({  space: S.space2Xl  }) {
           ForEach(this.secs(), (s: Sec) => {
-            Column({ space: 4 }) {
-              Text(s.h).fontSize(12.5).fontWeight(FontWeight.Medium).fontColor(tk(this.dark, 'text')).width('100%')
-              Text(s.p).fontSize(11).fontColor(tc(this.dark, '#5C7086', 1)).lineHeight(19).width('100%')
+            Column({  space: S.spaceSm  }) {
+              Text(s.h).fontSize(S.bodySize).fontWeight(FontWeight.Medium).fontColor(tk(this.pal, 'text')).width('100%')
+              Text(s.p).fontSize(S.labelSize).fontColor(tc(this.pal, '#5C7086', 1)).lineHeight(19).width('100%')
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
           }, (s: Sec) => `sec-${s.h}`)
         }
         .width('100%')
-        .padding({ left: 14, right: 14, top: 14, bottom: 14 })
+        .padding({  left: S.space3Xl, right: S.space3Xl, top: S.space3Xl, bottom: S.space3Xl  })
         .borderRadius(S.radiusInner)
-        .backgroundColor(tc(this.dark, '#FFFFFF', 0))
-        .border({ width: 1, color: tk(this.dark, 'cardBorder') })
+        .backgroundColor(tc(this.pal, '#FFFFFF', 0))
+        .border({ width: 1, color: tk(this.pal, 'cardBorder') })
         .alignItems(HorizontalAlign.Start)
 
         Text('本 App 不联网、不收集个人信息；所有数据只存在你的设备上。')
-          .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(16).width('100%')
-          .margin({ top: 12 })
+          .fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1)).lineHeight(16).width('100%')
+          .margin({  top: S.space2Xl  })
 
         Blank()
       }
       .width('100%')
-      .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop, bottom: S.pageBottom })
+      .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop, bottom: R.bottomPad()  })
       .alignItems(HorizontalAlign.Start)
     }
+      // v5.16：滚动时把右下角悬浮按钮藏起来（它正好压在内容上），停了就回来
+      .onDidScroll((x: number, y: number) => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+      .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
     .onScrollEdge(onEdgeScrolled)
     .onWillScroll(onEdgeWillScroll)
     .align(Alignment.TopStart)
@@ -206,7 +218,8 @@ export struct PolicyView {
     .height('100%')
     .scrollBar(BarState.Off)
     .constraintSize({ maxWidth: 1240 })
-    .backgroundColor(tk(this.dark, 'bg'))
+    // v5.0：页面底色改成透明，让 Index 根 Stack 上的大光斑透出来
+    .backgroundColor(Color.Transparent)
     .edgeEffect(EdgeEffect.Spring)
   }
 }

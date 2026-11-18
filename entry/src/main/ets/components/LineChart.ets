@@ -9,12 +9,12 @@
 //     字号退回默认 `'normal normal 14px sans-serif'`，在 vp 坐标系里只有 14/3.5 ≈ 4vp ⇒ 字小得看不清。
 //     现在字号用 **`vp`** 单位写（`'11vp sans-serif'`），才是真正的 11vp。
 //  2) 画布坐标系既然是 vp，线宽、圆点半径、留白就都按 vp 直接写，不要再乘密度。
-import { C, onFill, tc, tk } from '../utils/Theme';
+import { misc, onFill, tc, tk } from '../utils/Theme';
 
 @Component
 export struct LineChart {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') @Watch('onDarkChanged') dark: boolean = false;
+  @StorageLink('wb_pal') @Watch('onPalChanged') pal: number = 4;
   @Prop values: number[] = [];
   @Prop labels: string[] = [];
   @Prop chartHeight: number = 150;
@@ -32,7 +32,7 @@ export struct LineChart {
   }
 
   /** v4.8：主题切换后画布不会自动重画，这里手动重画一次 */
-  private onDarkChanged(): void {
+  private onPalChanged(): void {
     this.draw();
   }
 
@@ -60,7 +60,7 @@ export struct LineChart {
     const yOf = (i: number): number => padT + gh - gh * this.values[i] / top;
 
     // 网格线（三条：#EDF4FA）
-    ctx.strokeStyle = tc(this.dark, '#EDF4FA', 2);
+    ctx.strokeStyle = tc(this.pal, '#EDF4FA', 2);
     ctx.lineWidth = 1;
     for (let g = 0; g <= 2; g++) {
       const y = padT + gh * g / 2;
@@ -87,7 +87,7 @@ export struct LineChart {
     for (let i = 0; i < n; i++) {
       if (i === 0) { ctx.moveTo(xOf(i), yOf(i)); } else { ctx.lineTo(xOf(i), yOf(i)); }
     }
-    ctx.strokeStyle = tk(this.dark, 'brand');
+    ctx.strokeStyle = tk(this.pal, 'brand');
     ctx.lineWidth = 2.2;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -97,9 +97,9 @@ export struct LineChart {
     for (let i = 0; i < n; i++) {
       ctx.beginPath();
       ctx.arc(xOf(i), yOf(i), i === n - 1 ? 5 : 4, 0, Math.PI * 2);
-      ctx.fillStyle = tk(this.dark, 'card');
+      ctx.fillStyle = tk(this.pal, 'card');
       ctx.fill();
-      ctx.strokeStyle = tk(this.dark, 'brand');
+      ctx.strokeStyle = tk(this.pal, 'brand');
       ctx.lineWidth = 2;
       ctx.stroke();
     }
@@ -108,7 +108,7 @@ export struct LineChart {
     ctx.font = '11vp sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#7E97AC';
+    ctx.fillStyle = misc(this.pal, 'axisLabel', '#7E97AC');
     if (this.labels.length === n) {
       for (let i = 0; i < n; i++) {
         ctx.fillText(this.labels[i], xOf(i), h - 13);
@@ -129,7 +129,7 @@ export struct LineChart {
       if (bx - bw / 2 < 4) { bx = 4 + bw / 2; }
       const by = Math.max(8, yOf(n - 1) - 12 - bh);
       this.onBubble(bx - bw / 2, by, bw, bh);
-      ctx.fillStyle = tk(this.dark, 'brand');
+      ctx.fillStyle = tk(this.pal, 'brand');
       ctx.beginPath();
       // 圆角矩形（Canvas 没有 roundRect，手画）
       ctx.moveTo(bx - bw / 2 + rr, by);
@@ -144,7 +144,7 @@ export struct LineChart {
       ctx.closePath();
       ctx.fill();
       // v4.21：气泡底是品牌色（#3AC8C2），白字只有 2.05:1；改成深墨绿后 8.2:1
-      ctx.fillStyle = onFill(this.dark);
+      ctx.fillStyle = onFill(this.pal);
       ctx.font = 'bold 14vp sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';

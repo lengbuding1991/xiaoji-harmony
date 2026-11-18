@@ -4,24 +4,24 @@
  * 为什么要它：
  *   手机上任务 / 日程 / 项目这些表单用的是 bindSheet（底部抽屉）——单手够得着，是手机的原生手势。
  *   但平板 / 折叠屏展开后，底部抽屉会横跨 1000+ vp，像一张横幅铺在屏幕底部，很丑；
- *   而「记录灵感」的新建编辑器从 v4.4 起就是「居中卡片 + 遮罩」，在平板上好看得多。
- *   所以宽屏时改成和记录灵感一样的居中弹窗，手机保持原来的底部抽屉。
+ *   而「随手记」的新建编辑器从 v4.4 起就是「居中卡片 + 遮罩」，在平板上好看得多。
+ *   所以宽屏时改成和随手记一样的居中弹窗，手机保持原来的底部抽屉。
  *
  * 做法：
  *   1) bindSheet 的选项跟着宽窄变：
  *        宽屏 → height '100%' + backgroundColor Color.Transparent + dragBar false
- *        窄屏 → SheetSize.FIT_CONTENT + tk(this.dark, 'card') + dragBar true
+ *        窄屏 → SheetSize.FIT_CONTENT + tk(this.pal, 'card') + dragBar true
  *   2) 弹层内容交给本组件：宽屏时渲染「遮罩 + 居中卡片」，窄屏时原样透传。
  *
- * 遮罩色、圆角、阴影都和记录灵感的编辑器保持一致（rgba(23,52,80,0.42) / 22 / radius 30）。
+ * 遮罩色、圆角、阴影都和随手记的编辑器保持一致（rgba(23,52,80,0.42) / 22 / radius 30）。
  */
-import { C, tk, tc } from '../utils/Theme';
+import { S, sheetShadow, tc, tk } from '../utils/Theme';
 import { R } from '../utils/Responsive';
 
 @Component
 export struct SheetFrame {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   /** 宽屏？宽屏走「遮罩 + 居中卡片」，窄屏原样透传 */
   @Prop wide: boolean = false;
   /** 点遮罩时关闭（一般就是「把这个弹层关掉」） */
@@ -39,10 +39,12 @@ export struct SheetFrame {
     if (this.wide) {
       Stack({ alignContent: Alignment.Center }) {
         // 遮罩：点一下关掉弹层（v4.26 宽屏走页面内浮层，遮罩由这里画）
+        // v5.0：遮罩底下加一层毛玻璃，弹层后面的页面会被虚化，浮层「浮」起来
         Column()
           .width('100%')
           .height('100%')
           .backgroundColor('rgba(23,52,80,0.42)')
+          .backdropBlur(10)
           .onClick(() => { this.onClose(); })
 
         // 卡片：居中、限宽、限高
@@ -65,14 +67,21 @@ export struct SheetFrame {
         }
         .width('92%')
         .constraintSize({ maxWidth: 520, maxHeight: R.sheetMaxH() })
-        .backgroundColor(tk(this.dark, 'card'))
-        .borderRadius(22)
+        .backgroundColor(tk(this.pal, 'card'))
+        .borderRadius(S.radiusSheet)
+        // v5.0：卡边一道亮线（水晶的「高光描边」），深色下用半透明白
+        .border({ width: 1, color: 'rgba(255,255,255,0.92)' })
         .clip(true)
-        .shadow({ radius: 30, color: 'rgba(23,52,80,0.26)', offsetX: 0, offsetY: 14 })
+        .shadow(sheetShadow(this.pal))
         .onClick(() => {})
+        // v5.0：卡片从 0.96 倍「长出来」
+        .transition(TransitionEffect.scale({ x: 0.96, y: 0.96 })
+          .animation({ duration: 200, curve: Curve.EaseOut }))
       }
       .width('100%')
       .height('100%')
+      // v5.0：遮罩淡入
+      .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseOut }))
     } else {
       // 窄屏：底部抽屉。
       // 面板背景已改成透明（见各页 bindSheet 的 backgroundColor），
@@ -82,14 +91,14 @@ export struct SheetFrame {
         Column()
           .width(36)
           .height(4)
-          .borderRadius(2)
-          .backgroundColor(tc(this.dark, '#C9D8E6', 0))
-          .margin({ top: 8 })
+          .borderRadius(S.radiusDot)
+          .backgroundColor(tc(this.pal, '#C9D8E6', 0))
+          .margin({  top: S.spaceLg  })
         this.content()
       }
       .width('100%')
-      .backgroundColor(tk(this.dark, 'card'))
-      .borderRadius(22)
+      .backgroundColor(tk(this.pal, 'card'))
+      .borderRadius(S.radiusSheet)
       .clip(true)
     }
   }

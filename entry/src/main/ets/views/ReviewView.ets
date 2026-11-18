@@ -1,9 +1,10 @@
-// 每日复盘
+// 复盘笔记
 // 对齐「个人工作台」ReviewApp.tsx：日/周切换 → 三个问题（今天做成什么 / 哪里卡住 /
 // 明天最重要的一件事）+ 一句话总结 → 存成任务 / 保存；右侧历史列表 + 本周统计。
 // v4.3：AI 起稿入口已隐藏（等做数据线上版再开），本地起稿逻辑仍在 db/LocalAI.ets。
 import { Store } from '../store/Store';
-import { C, onFill, S, tc, tk, tkInk } from '../utils/Theme';
+import { S, brandGradient, onFill, tc, tk, tkInk } from '../utils/Theme';
+import { R } from '../utils/Responsive';
 import { D } from '../utils/DateUtil';
 import { Card } from '../components/Card';
 import { Chip } from '../components/Widgets';
@@ -35,7 +36,11 @@ interface AiReviewResp {
 @Component
 export struct ReviewView {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
+  // v5.17：宽屏列数（>1180vp 三列 / >820vp 两列 / 更窄一列）。
+  //   R.cols() 读的是 AppStorage，改窗口大小时不会自己触发本页重画 ⇒ 这里挂一个 @StorageLink，
+  //   窗口宽度一变（旋转、分屏、拖窗口）本页就会重画，栅格列数跟着变。
+  @StorageLink('wb_cols') cols: number = 1;
   @State tick: number = 0;
   @State reviews: Review[] = [];
   // v4.5：ArkUI V1 只刷新「表达式里直接读过 state」的节点 ⇒ 计数进 @State
@@ -53,9 +58,15 @@ export struct ReviewView {
   @State saving: boolean = false;
   @State drafting: boolean = false;
   @State msg: string = '';
+  // v5.15 可访问性：msg 既有成功提示也有错误提示 ⇒ 用这个开关决定字号和颜色
+  @State msgIsErr: boolean = false;
   @State toTaskBusy: boolean = false;
   onNavigate: (page: string) => void = () => {};
+  // v5.17：二级页返回（Index 传进来的）
+  onBack: () => void = () => {};
   @State toTaskMsg: string = '';
+  // v5.15 可访问性：toTaskMsg 既有成功提示也有错误提示 ⇒ 用这个开关决定字号和颜色
+  @State toTaskErr: boolean = false;
   @State loadedKey: string = '';
   private unsub: () => void = () => {};
 
@@ -167,6 +178,26 @@ export struct ReviewView {
     return out.slice(0, 12);   // v4.4：网页版是 12 条
   }
 
+  /**
+   * v5.17 宽屏两栏：栅格总列数。
+   * 网页端 .review-grid 是两栏（1.5fr 1fr）⇒ 复盘列表宽屏最多铺两列，
+   * 手机（cols=1）一列。
+   */
+  private gridCols(): number {
+    return this.cols >= 2 ? 2 : 1;
+  }
+
+  /**
+   * v5.17 宽屏两栏：某个块占几列（同 HomeView 的写法）。
+   * 权重 3 = 整行，权重 2 = 两列，权重 1 = 一列；手机上永远一列。
+   */
+  private spanFor(weight: number): number {
+    const c: number = this.cols;
+    if (weight >= 3 && c >= 2) { return c; }
+    if (weight >= 2 && c >= 3) { return 2; }
+    return 1;
+  }
+
   // v4.3：AI 入口隐藏后 aiReady() 不再被调用（离线版也没有 AI Key 这回事），先留着不删。
   private aiReady(): boolean {
     return this.aiKeySet;
@@ -175,12 +206,15 @@ export struct ReviewView {
   // ── 动作 ──
   private async save(): Promise<void> {
     if (this.isEmpty()) {
+      // v5.15 可访问性：校验不通过 ⇒ 标记成错误（12+ 危险色）
       this.msg = '写一句再保存吧';
+      this.msgIsErr = true;
       toast(this.getUIContext(), '写一句再保存吧');
       return;
     }
     this.saving = true;
     this.msg = '';
+    this.msgIsErr = false;
     const body: ReviewSave = {
       date: this.dateKey(),
       type: this.typeStr(),
@@ -193,11 +227,15 @@ export struct ReviewView {
     this.saving = false;
     if (ok) {
       this.msg = '已保存';
+      this.msgIsErr = false;
       this.loadedKey = '';
       this.syncFromStore();
       this.msg = '已保存';
+      this.msgIsErr = false;
     } else {
+      // v5.15 可访问性：保存失败 ⇒ 错误提示（12+ 危险色）
       this.msg = Store.I.lastError.length > 0 ? Store.I.lastError : '保存失败，请重试';
+      this.msgIsErr = true;
     }
   }
 
@@ -221,9 +259,11 @@ export struct ReviewView {
         this.summary = '';
       }
       this.msg = '已删除这篇复盘';
+      this.msgIsErr = false;
       toast(this.getUIContext(), '已删除这篇复盘');
     } catch (e) {
       this.msg = (e as Error).message;
+      this.msgIsErr = true;
       toast(this.getUIContext(), this.msg);
     }
   }
@@ -231,6 +271,7 @@ export struct ReviewView {
   private async draft(): Promise<void> {
     this.drafting = true;
     this.msg = '';
+    this.msgIsErr = false;
     try {
       // v4.0：本地规则起稿 —— 按本地任务/记录数据算，不用联网
       const data: ReviewDraft = LocalAI.review(
@@ -239,9 +280,11 @@ export struct ReviewView {
       if (data.stuck.length > 0) { this.stuck = data.stuck; }
       if (data.tomorrow.length > 0) { this.tomorrow = data.tomorrow; }
       this.msg = '已按本地数据起稿，改完记得保存';
+      this.msgIsErr = false;
       toast(this.getUIContext(), '已按本地数据起稿，改完记得保存');
     } catch (e) {
       this.msg = (e as Error).message;
+      this.msgIsErr = true;
       toast(this.getUIContext(), this.msg);
     }
     this.drafting = false;
@@ -250,11 +293,14 @@ export struct ReviewView {
   private async makeTask(): Promise<void> {
     const text: string = this.tomorrow.trim();
     if (text.length === 0) {
+      // v5.15 可访问性：校验不通过 ⇒ 标记成错误（12+ 危险色）
       this.toTaskMsg = '先写一件再存';
+      this.toTaskErr = true;
       return;
     }
     this.toTaskBusy = true;
     this.toTaskMsg = '';
+    this.toTaskErr = false;
     const due: string = D.key(D.dateAdd(new Date(), 1));
     const body: TaskCreate = {
       title: text.slice(0, 80),
@@ -266,32 +312,34 @@ export struct ReviewView {
     try {
       await Repo.createTask(body);
       this.toTaskMsg = '已存成任务，截止明天';
+      this.toTaskErr = false;
       this.tomorrow = '';
       await Store.I.reloadTasks();
       toast(this.getUIContext(), '已存成任务，截止明天');
     } catch (e) {
       this.toTaskMsg = (e as Error).message;
+      this.toTaskErr = true;
     }
     this.toTaskBusy = false;
   }
 
   // ── 视图 ──
   @Builder qBlock(no: string, label: string, placeholder: string, value: string, minH: number, kind: number) {
-    Column({ space: 6 }) {
-      Row({ space: 5 }) {
-        Text(no).fontSize(10).fontWeight(FontWeight.Bold).fontColor(tkInk(this.dark, 'brandDeep'))
-        Text(label).fontSize(11).fontColor(tc(this.dark, '#5E7183', 1))
+    Column({  space: S.spaceMd  }) {
+      Row({  space: S.spaceMd  }) {
+        Text(no).fontSize(S.subSize).fontWeight(FontWeight.Bold).fontColor(tkInk(this.pal, 'brandDeep'))
+        Text(label).fontSize(S.labelSize).fontColor(tc(this.pal, '#5E7183', 1))
       }
       .alignItems(VerticalAlign.Center)
       if (kind === 1) {
         TextArea({ placeholder: placeholder, text: value })
-          .fontSize(12).constraintSize({ minHeight: minH })
+          .fontSize(S.smallSize).constraintSize({ minHeight: minH })
           .placeholderFont({ size: 12 })
-          .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-          .fontColor(tk(this.dark, 'text'))
-          .caretColor(tk(this.dark, 'brand'))
-          .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-          .border({ width: 1, color: tk(this.dark, 'line') })
+          .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+          .fontColor(tk(this.pal, 'text'))
+          .caretColor(tk(this.pal, 'brand'))
+          .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+          .border({ width: 1, color: tk(this.pal, 'line') })
           .padding(10).width('100%')
           .onChange((v: string) => {
             if (no === '01') { this.did = v; }
@@ -300,47 +348,55 @@ export struct ReviewView {
           })
       } else {
         TextArea({ placeholder: placeholder, text: value })
-          .fontSize(12).constraintSize({ minHeight: minH })
+          .fontSize(S.smallSize).constraintSize({ minHeight: minH })
           .placeholderFont({ size: 12 })
-          .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-          .fontColor(tk(this.dark, 'text'))
-          .caretColor(tk(this.dark, 'brand'))
-          .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-          .border({ width: 1, color: tk(this.dark, 'line') })
+          .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+          .fontColor(tk(this.pal, 'text'))
+          .caretColor(tk(this.pal, 'brand'))
+          .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+          .border({ width: 1, color: tk(this.pal, 'line') })
           .padding(10).width('100%')
           .onChange((v: string) => { this.summary = v; })
       }
     }
     .width('100%')
-    .margin({ bottom: 13 })
+    .margin({  bottom: S.space3Xl  })
     .alignItems(HorizontalAlign.Start)
   }
 
   @Builder historyItem(r: Review) {
-    Column({ space: 3 }) {
-      Row({ space: 6 }) {
+    Column({  space: S.spaceSm  }) {
+      Row({  space: S.spaceMd  }) {
         Text(`${r.date} · ${r.type === 'weekly' ? '周复盘' : '日复盘'}`)
-          .fontSize(9).fontColor(tc(this.dark, '#6A7F92', 1)).layoutWeight(1)
-        SymbolGlyph(sym('trash')).fontSize(14).fontColor([tc(this.dark, '#C3D2DE', 1)])
-          .padding(3)
-          .onClick(() => { this.remove(r); })
+          .fontSize(S.tinySize).fontColor(tc(this.pal, '#6A7F92', 1)).layoutWeight(1)
+        // v5.15 可访问性：删除图标原来只有 ~20×20 ⇒ 外层套 40×40 的透明热区，图标本身不变
+        Row() {
+          SymbolGlyph(sym('trash')).fontSize(S.cardTitleSize).fontColor([tc(this.pal, '#C3D2DE', 1)])
+            .padding(3)
+        }
+        .width(40).height(40)
+        .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
+        .onClick(() => { this.remove(r); })
+        .accessibilityText('删除这篇复盘')
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
       Text(r.summary.length > 0 ? r.summary : (r.did.length > 0 ? r.did : '这篇没写内容'))
-        .fontSize(10).fontColor(r.summary.length > 0 || r.did.length > 0 ? tc(this.dark, '#78899C', 1) : tc(this.dark, '#B6C8D6', 1))
+        .fontSize(S.subSize).fontColor(r.summary.length > 0 || r.did.length > 0 ? tc(this.pal, '#78899C', 1) : tc(this.pal, '#B6C8D6', 1))
         .maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
     }
     .width('100%')
-    .padding({ top: 10, bottom: 10 })
+    .padding({  top: S.spaceXl, bottom: S.spaceXl  })
     .border({ width: { bottom: 1 }, color: '#F2F7FB' })
     .alignItems(HorizontalAlign.Start)
   }
 
   @Builder pageTop() {
     TopBar({
+      backLabel: '返回',
+      onBack: () => { this.onBack(); },
       primaryText: this.saving ? '保存中…' : '保存复盘',
       // v4.3：AI 入口先隐藏（用户要求，等做数据线上版再开）。
       // 起稿逻辑还在 db/LocalAI.ets（本地规则、不联网），把下面两行放回来即可：
@@ -357,53 +413,53 @@ export struct ReviewView {
   build() {
     Scroll() {
       Column() {
-        Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+        Text(`${this.tick}`).fontSize(S.hiddenSize).width(1).height(1).opacity(0)
 
         this.pageTop()
 
         // page-head
-        Column({ space: 5 }) {
-          Text(`REVIEW · ${this.type === 0 ? D.dotDate(new Date()) : this.weeklyKey() + ' 周'}`)
-            .fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
+        Column({  space: S.spaceMd  }) {
+          Text(`REVIEW · ${this.type === 0 ? D.mdWeek(D.key(new Date())) : this.weeklyKey() + ' 周'}`)
+            .fontSize(S.tinySize).fontColor(tc(this.pal, '#9DB0C1', 1)).letterSpacing(1.6)
           Text(this.type === 0 ? '今天，留下了什么？' : '这一周，走到了哪里？')
-            .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
+            .fontSize(S.sectionSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text')).letterSpacing(-0.2)
           Text(this.type === 0
             ? '三个问题，30 秒。写给明天的自己看。'
             : `自动汇总：本周完成 ${this.kWeekDone} 件任务，写下 ${this.kWeekNotes} 条记录。`)
-            .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+            .fontSize(S.labelSize).fontColor(tk(this.pal, 'textSub'))
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
-        .padding({ top: 14, bottom: 12 })
+        .padding({  top: S.spaceXl, bottom: S.spaceXl  })
 
-        Row({ space: 6 }) {
+        Row({  space: S.spaceMd  }) {
           Chip({ text: '日复盘', active: this.type === 0, onTap: () => { this.switchType(0); } })
           Chip({ text: '周复盘', active: this.type === 1, onTap: () => { this.switchType(1); } })
         }
         .width('100%')
-        .margin({ bottom: 12 })
+        .margin({  bottom: S.space2Xl  })
 
         // 复盘表单
         Card({ title: this.type === 0 ? '今日复盘' : '本周复盘', sub: this.type === 0 ? '不用写长，写具体就好。' : '本周完成的情况见下方统计，从这里开始写。', bodyPadTop: 8 }) {
-          Column({ space: 0 }) {
+          Column({  space: 0  }) {
             if (this.type === 1) {
-              Column({ space: 3 }) {
-                Row({ space: 4 }) {
-                  Text('本周自动统计：完成').fontSize(11.5).fontColor(tc(this.dark, '#6A7F92', 1))
-                  Text(`${this.kWeekDone}`).fontSize(11.5).fontWeight(FontWeight.Bold).fontColor(tkInk(this.dark, 'brandDeep'))
-                  Text('件任务，留下').fontSize(11.5).fontColor(tc(this.dark, '#6A7F92', 1))
-                  Text(`${this.kWeekNotes}`).fontSize(11.5).fontWeight(FontWeight.Bold).fontColor(tkInk(this.dark, 'brandDeep'))
-                  Text('条记录。').fontSize(11.5).fontColor(tc(this.dark, '#6A7F92', 1))
+              Column({  space: S.spaceSm  }) {
+                Row({  space: S.spaceSm  }) {
+                  Text('本周自动统计：完成').fontSize(S.labelSize).fontColor(tc(this.pal, '#6A7F92', 1))
+                  Text(`${this.kWeekDone}`).fontSize(S.labelSize).fontWeight(FontWeight.Bold).fontColor(tkInk(this.pal, 'brandDeep'))
+                  Text('件任务，留下').fontSize(S.labelSize).fontColor(tc(this.pal, '#6A7F92', 1))
+                  Text(`${this.kWeekNotes}`).fontSize(S.labelSize).fontWeight(FontWeight.Bold).fontColor(tkInk(this.pal, 'brandDeep'))
+                  Text('条记录。').fontSize(S.labelSize).fontColor(tc(this.pal, '#6A7F92', 1))
                 }
                 .alignItems(VerticalAlign.Center)
               }
               .width('100%')
               .padding(10)
-              .borderRadius(10)
-              .backgroundColor(tc(this.dark, '#F5FAFD', 0))
-              .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E9F3FA', 2), 2) })
+              .borderRadius(S.radiusBtn)
+              .backgroundColor(tc(this.pal, '#F5FAFD', 0))
+              .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E9F3FA', 2), 2) })
               .alignItems(HorizontalAlign.Start)
-              .margin({ bottom: 12 })
+              .margin({  bottom: S.space2Xl  })
             }
 
             this.qBlock('01',
@@ -422,62 +478,79 @@ export struct ReviewView {
               this.tomorrow, 76, 1)
 
             // 存成任务
-            Row({ space: 8 }) {
-              Text(this.toTaskBusy ? '存着…' : '存成任务')
-                .fontSize(11).fontColor(tc(this.dark, '#5E7183', 1))
-                .padding({ left: 11, right: 11, top: 5, bottom: 5 })
-                .borderRadius(9)
-                .backgroundColor(tk(this.dark, 'card')).border({ width: 1, color: tk(this.dark, 'line') })
-                .onClick(() => { this.makeTask(); })
-              Text('截止日设为明天').fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1))
+            Row({  space: S.spaceLg  }) {
+              // v5.15 可访问性：「存成任务」原来只有 ~23 高 ⇒ 外层套 40 高的透明热区，按钮本身不变
+              Row() {
+                Text(this.toTaskBusy ? '存着…' : '存成任务')
+                  .fontSize(S.labelSize).fontColor(tc(this.pal, '#5E7183', 1))
+                  .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceMd, bottom: S.spaceMd  })
+                  .borderRadius(S.radiusSm)
+                  .backgroundColor(tk(this.pal, 'card')).border({ width: 1, color: tk(this.pal, 'line') })
+              }
+              .height(40)
+              .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
+              .onClick(() => { this.makeTask(); })
+              .accessibilityText('存成任务')
+              Text('截止日设为明天').fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1))
               if (this.toTaskMsg.length > 0) {
-                Text(this.toTaskMsg).fontSize(9.5).fontColor(tkInk(this.dark, 'brandDeep'))
+                // v5.15 可访问性：出错时 12+ 危险色，成功提示保持原来的小字
+                Text(this.toTaskMsg)
+                  .fontSize(this.toTaskErr ? S.smallSize : S.tinySize)
+                  .fontColor(this.toTaskErr ? tkInk(this.pal, 'danger') : tkInk(this.pal, 'brandDeep'))
               }
             }
             .width('100%')
             .alignItems(VerticalAlign.Center)
-            .margin({ top: -6, bottom: 14 })
+            .margin({  top: -6, bottom: S.space3Xl  })
 
             // 一句话总结
-            Column({ space: 6 }) {
-              Text('一句话总结（可选）').fontSize(11).fontColor(tc(this.dark, '#5E7183', 1))
+            Column({  space: S.spaceMd  }) {
+              Text('一句话总结（可选）').fontSize(S.labelSize).fontColor(tc(this.pal, '#5E7183', 1))
               TextArea({ placeholder: '给这段一个句号。', text: this.summary })
-                .fontSize(12).constraintSize({ minHeight: 54 })
+                .fontSize(S.smallSize).constraintSize({ minHeight: 54 })
                 .placeholderFont({ size: 12 })
-                .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-                .fontColor(tk(this.dark, 'text'))
-                .caretColor(tk(this.dark, 'brand'))
-                .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-                .border({ width: 1, color: tk(this.dark, 'line') })
+                .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+                .fontColor(tk(this.pal, 'text'))
+                .caretColor(tk(this.pal, 'brand'))
+                .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+                .border({ width: 1, color: tk(this.pal, 'line') })
                 .padding(10).width('100%')
                 .onChange((v: string) => { this.summary = v; })
             }
             .width('100%')
-            .margin({ bottom: 14 })
+            .margin({  bottom: S.space3Xl  })
             .alignItems(HorizontalAlign.Start)
 
             // 按钮行
-            Row({ space: 8 }) {
+            Row({  space: S.spaceLg  }) {
+              // v5.15 可访问性：「保存复盘」原来只有 ~31 高 ⇒ 撑到 40
               Text(this.saving ? '保存中…' : '保存复盘')
-                .fontSize(11.5).fontWeight(FontWeight.Medium).fontColor(onFill(this.dark))
-                .padding({ left: 15, right: 15, top: 9, bottom: 9 })
+                .fontSize(S.labelSize).fontWeight(FontWeight.Medium).fontColor(onFill(this.pal))
+                .height(40)
+                .padding({  left: 15, right: 15  })
                 .borderRadius(S.radiusBtn)
-                .linearGradient({ angle: 140, colors: [['#1C7C74', 0], ['#1B7799', 1]] })
+                .textAlign(TextAlign.Center)
+                .linearGradient(brandGradient(this.pal))
                 .opacity(this.saving ? 0.6 : 1)
                 .onClick(() => { this.save(); })
+                .accessibilityText('保存复盘')
               // v4.3：AI 入口先隐藏（等做数据线上版再开）。代码保留，取消注释即可恢复：
-              // Row({ space: 4 }) {
-              //   SymbolGlyph(sym('wand')).fontSize(11).fontColor([tc(this.dark, '#5E7183', 1)])
-              //   Text(this.drafting ? '起稿中…' : '让 AI 起稿').fontSize(11).fontColor(tc(this.dark, '#5E7183', 1))
+              // Row({  space: S.spaceSm  }) {
+              //   SymbolGlyph(sym('wand')).fontSize(S.labelSize).fontColor([tc(this.pal, '#5E7183', 1)])
+              //   Text(this.drafting ? '起稿中…' : '让 AI 起稿').fontSize(S.labelSize).fontColor(tc(this.pal, '#5E7183', 1))
               // }
-              // .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+              // .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceLg, bottom: S.spaceLg  })
               // .borderRadius(S.radiusBtn)
-              // .backgroundColor(tk(this.dark, 'card')).border({ width: 1, color: tk(this.dark, 'line') })
+              // .backgroundColor(tk(this.pal, 'card')).border({ width: 1, color: tk(this.pal, 'line') })
               // .alignItems(VerticalAlign.Center)
               // .opacity(this.drafting ? 0.6 : 1)
               // .onClick(() => { this.draft(); })
               if (this.msg.length > 0) {
-                Text(this.msg).fontSize(9.5).fontColor(tc(this.dark, '#8FA2B3', 1)).layoutWeight(1)
+                // v5.15 可访问性：出错时 12+ 危险色，成功提示保持原来的小字
+                Text(this.msg)
+                  .fontSize(this.msgIsErr ? S.smallSize : S.tinySize)
+                  .fontColor(this.msgIsErr ? tkInk(this.pal, 'danger') : tc(this.pal, '#8FA2B3', 1))
+                  .layoutWeight(1)
                   .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
               }
             }
@@ -486,8 +559,8 @@ export struct ReviewView {
 
             // v4.3：离线版没有 AI Key 了，这行提示一起去掉。
             // if (!this.aiReady()) {
-            //   Text('（离线本地起稿，不用联网）').fontSize(9).fontColor(tc(this.dark, '#B7C7D4', 1))
-            //     .width('100%').margin({ top: 6 })
+            //   Text('（离线本地起稿，不用联网）').fontSize(S.tinySize).fontColor(tc(this.pal, '#B7C7D4', 1))
+            //     .width('100%').margin({  top: S.spaceMd  })
             // }
           }
           .width('100%')
@@ -497,16 +570,30 @@ export struct ReviewView {
         // 历史
         Column() {
           Card({ title: `最近${this.type === 0 ? '日' : '周'}复盘`, sub: '回头看，才知道自己走了多远。', bodyPadTop: 6 }) {
-            Column({ space: 0 }) {
+            Column({  space: 0  }) {
               if (this.kHistory === 0) {
-                Column({ space: 5 }) {
+                Column({  space: S.spaceMd  }) {
                   Text(`还没有${this.type === 0 ? '日' : '周'}复盘`)
-                    .fontSize(12.5).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#5E7183', 1))
-                  Text('从上面这几行开始，30 秒就够。').fontSize(10.5).fontColor(tc(this.dark, '#A8B8C6', 1))
+                    .fontSize(S.bodySize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#5E7183', 1))
+                  Text('从上面这几行开始，30 秒就够。').fontSize(S.subSize).fontColor(tc(this.pal, '#A8B8C6', 1))
                 }
                 .width('100%')
-                .padding({ top: 24, bottom: 24 })
+                .padding({  top: 24, bottom: 24  })
                 .alignItems(HorizontalAlign.Center)
+              } else if (this.gridCols() >= 2) {
+                // v5.17 宽屏：网页端 .review-grid 是两栏（1.5fr 1fr）⇒ 复盘列表宽屏铺两列。
+                //   手机（gridCols()=1）走下面的单列分支，排版跟以前一样。
+                GridRow({ columns: this.gridCols(), gutter: { x: S.gapLg, y: 0 } }) {
+                  ForEach(this.historyOf(), (r: Review) => {
+                    GridCol({ span: this.spanFor(1) }) {
+                      Column() {
+                        this.historyItem(r)
+                      }
+                      .width('100%')
+                    }
+                  }, (r: Review) => `rv-${r.id}-${r.updated_at}-${this.tick}`)
+                }
+                .width('100%')
               } else {
                 ForEach(this.historyOf(), (r: Review) => {
                   this.historyItem(r)
@@ -514,30 +601,30 @@ export struct ReviewView {
               }
 
               // 底部统计
-              Row({ space: 10 }) {
-                Column({ space: 1 }) {
-                  Text('本周完成任务').fontSize(10).fontColor(tc(this.dark, '#8FA2B3', 1))
-                  Text(`${this.kWeekDone}`).fontSize(16).fontWeight(FontWeight.Bold).fontColor(tc(this.dark, '#2B4055', 1))
+              Row({  space: S.spaceXl  }) {
+                Column({  space: S.spaceXs  }) {
+                  Text('本周完成任务').fontSize(S.subSize).fontColor(tc(this.pal, '#8FA2B3', 1))
+                  Text(`${this.kWeekDone}`).fontSize(S.iconSize).fontWeight(FontWeight.Bold).fontColor(tc(this.pal, '#2B4055', 1))
                 }
                 .layoutWeight(1)
-                .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-                .borderRadius(11)
-                .backgroundColor(tc(this.dark, '#F6FAFE', 0))
+                .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+                .borderRadius(S.radiusBtn)
+                .backgroundColor(tc(this.pal, '#F6FAFE', 0))
                 .alignItems(HorizontalAlign.Start)
 
-                Column({ space: 1 }) {
-                  Text('本周写下的记录').fontSize(10).fontColor(tc(this.dark, '#8FA2B3', 1))
-                  Text(`${this.kWeekNotes}`).fontSize(16).fontWeight(FontWeight.Bold).fontColor(tc(this.dark, '#2B4055', 1))
+                Column({  space: S.spaceXs  }) {
+                  Text('本周写下的记录').fontSize(S.subSize).fontColor(tc(this.pal, '#8FA2B3', 1))
+                  Text(`${this.kWeekNotes}`).fontSize(S.iconSize).fontWeight(FontWeight.Bold).fontColor(tc(this.pal, '#2B4055', 1))
                 }
                 .layoutWeight(1)
-                .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-                .borderRadius(11)
-                .backgroundColor(tc(this.dark, '#F6FAFE', 0))
+                .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+                .borderRadius(S.radiusBtn)
+                .backgroundColor(tc(this.pal, '#F6FAFE', 0))
                 .alignItems(HorizontalAlign.Start)
               }
               .width('100%')
-              .margin({ top: 12 })
-              .padding({ top: 12 })
+              .margin({  top: S.space2Xl  })
+              .padding({  top: S.space2Xl  })
               .border({ width: { top: 1 }, color: '#F2F7FB' })
             }
             .width('100%')
@@ -545,12 +632,15 @@ export struct ReviewView {
           }
         }
         .width('100%')
-        .margin({ top: 12, bottom: S.pageBottom })
+        .margin({  top: S.space2Xl, bottom: R.bottomPad()  })
       }
       .width('100%')
-      .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+      .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop  })
       .alignItems(HorizontalAlign.Start)
     }
+      // v5.16：滚动时把右下角悬浮按钮藏起来（它正好压在内容上），停了就回来
+      .onDidScroll((x: number, y: number) => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+      .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
     .onScrollEdge(onEdgeScrolled)
     .onWillScroll(onEdgeWillScroll)
     .align(Alignment.TopStart)
@@ -558,7 +648,8 @@ export struct ReviewView {
     .height('100%')
     .scrollBar(BarState.Off)
     .constraintSize({ maxWidth: 1240 })
-    .backgroundColor(tk(this.dark, 'bg'))
+    // v5.0：页面底色改成透明，让 Index 根 Stack 上的大光斑透出来
+    .backgroundColor(Color.Transparent)
     .edgeEffect(EdgeEffect.Spring)
   }
 

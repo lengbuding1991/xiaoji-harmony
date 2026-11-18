@@ -1,42 +1,53 @@
 // 一批「小方块」组件，全部照抄工作台 CSS 里的对应规则。
 // 放在一个文件里是为了少建几个文件，每个 struct 都是独立的。
-import { brandGradient, C, catBg, catColor, onFill, S, tc, tk, tkInk } from '../utils/Theme';
+import { brandGradient, catBg, catColor, miniGradient, misc, onFill, paletteList, S, tc, tk, tkInk, trackGradient } from '../utils/Theme';
 import { sym } from './Icon';
 import { IconBox } from './IconBox';
+// v5.0：数字滚动（首页 KPI）
+import { AnimatedNum } from './AnimatedNum';
 
 /** .kpi —— 白底圆角 18（手机端 15）、padding 11/12、数字 22 bold */
 @Component
 export struct Kpi {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop label: string = '';
   @Prop icon: string = 'home';
-  @Prop iconBg: string = '#E8F2FC';
-  @Prop iconFg: string = '#2F7FC4';
+  @Prop iconBg: string = '';
+  @Prop iconFg: string = '';
   @Prop value: string = '0';
   @Prop unit: string = '';
   @Prop sub: string = '';
-  @Prop subColor: string = '#52697E';
+  @Prop subColor: string = '';
   /** 0–100，负数表示不画进度条 */
   @Prop pct: number = -1;
+  // v5.0：≥0 时用 AnimatedNum 让数字「滚」到新值（-1 = 保持静态文本）
+  @Prop numValue: number = -1;
+  // v5.0：numValue 的小数位（0 = 整数）
+  @Prop numDecimals: number = 0;
 
   build() {
-    Column({ space: 2 }) {
-      Row({ space: 7 }) {
-        IconBox({ name: this.icon, boxSize: 27, iconSize: 14, radius: 9, bg: this.iconBg, fg: this.iconFg })
-        Text(this.label).fontSize(S.tinySize).fontColor(tc(this.dark, '#8095A8', 1))
+    Column({  space: S.spaceXs  }) {
+      Row({  space: S.spaceLg  }) {
+        IconBox({ name: this.icon, boxSize: 27, iconSize: 14, radius: 9, bg: this.iconBg.length > 0 ? this.iconBg : catBg(this.pal, 'work'), fg: this.iconFg.length > 0 ? this.iconFg : tk(this.pal, 'work') })
+        Text(this.label).fontSize(S.tinySize).fontColor(tc(this.pal, '#8095A8', 1))
         Blank()
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
-      Row({ space: 2 }) {
-        Text(this.value)
-          .fontSize(S.numberSize)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(tk(this.dark, 'text'))
+      Row({  space: S.spaceXs  }) {
+        // v5.0：数字滚动。numValue ≥ 0 时用 AnimatedNum；否则退回静态文本。
+        if (this.numValue >= 0) {
+          AnimatedNum({ value: this.numValue, decimals: this.numDecimals })
+        } else {
+          Text(this.value)
+            .fontSize(S.numberSize)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(tk(this.pal, 'text'))
+        }
         if (this.unit.length > 0) {
-          Text(this.unit).fontSize(10).fontColor(tk(this.dark, 'textFaint')).margin({ bottom: 3 })
+          Text(this.unit).fontSize(S.subSize).fontColor(tk(this.pal, 'textFaint')).margin({  bottom: S.spaceSm  })
         }
       }
       .width('100%')
@@ -45,7 +56,7 @@ export struct Kpi {
       if (this.sub.length > 0) {
         Text(this.sub)
           .fontSize(S.microSize + 0.5)
-          .fontColor(this.subColor)
+          .fontColor(this.subColor.length > 0 ? this.subColor : misc(this.pal, 'subColor', '#52697E'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
@@ -54,83 +65,54 @@ export struct Kpi {
           Row()
             .height(4)
             .width(`${Math.max(0, Math.min(100, this.pct))}%`)
-            .borderRadius(99)
-            .linearGradient({ angle: 90, colors: [['#12706B', 0], ['#0F6B66', 1]] })
+            .borderRadius(S.radiusPill)
+            .linearGradient(trackGradient(this.pal))
         }
         .width('100%')
         .height(4)
-        .borderRadius(99)
-        .backgroundColor(tk(this.dark, 'track'))
-        .margin({ top: 6 })
+        .borderRadius(S.radiusPill)
+        .backgroundColor(tk(this.pal, 'track'))
+        .margin({  top: S.spaceMd  })
       }
     }
     .width('100%')
-    .padding({ left: 12, right: 12, top: 11, bottom: 11 })
+    .padding({  left: S.space2Xl, right: S.space2Xl, top: S.space2Xl, bottom: S.space2Xl  })
     .alignItems(HorizontalAlign.Start)
-    .backgroundColor(tk(this.dark, 'card'))
-    .borderRadius(15)
-    .border({ width: 1, color: tk(this.dark, 'cardBorder') })
+    .backgroundColor(tk(this.pal, 'card'))
+    .borderRadius(S.radiusCard)
+    .border({ width: 1, color: tk(this.pal, 'cardBorder') })
   }
 }
 
 /** .mod —— 模块格：浅底 13 圆角，图标 29 + 两行字 */
 @Component
-export struct ModTile {
-  // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
-  @Prop icon: string = 'home';
-  @Prop label: string = '';
-  @Prop sub: string = '';
-  @Prop iconBg: string = '#E8F2FC';
-  @Prop iconFg: string = '#2F7FC4';
-  onTap: () => void = () => {};
-
-  build() {
-    Row({ space: 8 }) {
-      IconBox({ name: this.icon, boxSize: 29, iconSize: 14, radius: 9, bg: this.iconBg, fg: this.iconFg })
-      Column({ space: 1 }) {
-        Text(this.label)
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(tk(this.dark, 'text'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.sub)
-          .fontSize(8)
-          .fontColor(tk(this.dark, 'textHint'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ left: 8, right: 6, top: 9, bottom: 9 })
-    .borderRadius(S.radiusInner)
-    .backgroundColor(tk(this.dark, 'card2'))
-    .onClick(() => { this.onTap(); })
-  }
-}
-
-/** .chip —— 筛选胶囊（10.5px，选中 acc-soft + acc-line + acc-d） */
-@Component
 export struct Chip {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop text: string = '';
   @Prop active: boolean = false;
   onTap: () => void = () => {};
 
   build() {
-    Text(this.text)
-      .fontSize(S.subSize)
-      .fontColor(this.active ? tkInk(this.dark, 'brandDeep') : tc(this.dark, '#6A7F92', 1))
-      .fontWeight(this.active ? FontWeight.Medium : FontWeight.Normal)
-      .padding({ left: 12, right: 12, top: 5, bottom: 5 })
-      .borderRadius(S.radiusPill)
-      .backgroundColor(this.active ? tk(this.dark, 'brandSoft') : tk(this.dark, 'card'))
-      .border({ width: 1, color: this.active ? tk(this.dark, 'brandLine') : tk(this.dark, 'line') })
-      .onClick(() => { this.onTap(); })
+    // v5.15 可访问性：药丸本身还是原来那么高（约 22vp），外面套一层 40 高的透明热区，
+    //   手指点得到的范围 ≥40 高，视觉密度不变。
+    Row() {
+      Text(this.text)
+        .fontSize(S.subSize)
+        .fontColor(this.active ? tkInk(this.pal, 'brandDeep') : tc(this.pal, '#6A7F92', 1))
+        .fontWeight(this.active ? FontWeight.Medium : FontWeight.Normal)
+        .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceMd, bottom: S.spaceMd  })
+        .borderRadius(S.radiusPill)
+        .backgroundColor(this.active ? tk(this.pal, 'brandSoft') : tk(this.pal, 'card'))
+        .border({ width: 1, color: this.active ? tk(this.pal, 'brandLine') : tk(this.pal, 'line') })
+    }
+    .height(40)
+    .constraintSize({ minWidth: 40 })
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => { this.onTap(); })
+    // v5.15：读屏软件念的是这个文字（和药丸上写的一样）
+    .accessibilityText(this.text)
   }
 }
 
@@ -138,7 +120,7 @@ export struct Chip {
 @Component
 export struct SecHead {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop title: string = '';
   @Prop count: string = '';
   /** '' | 'arrows' | 'add' | 'text' */
@@ -148,53 +130,77 @@ export struct SecHead {
   onNext: () => void = () => {};
   onRight: () => void = () => {};
 
-  @Builder arrowBtn(icon: string, cb: () => void) {
+  // v5.15 可访问性：箭头小方块视觉还是 22×22，外面套 40×40 的透明热区。
+  //   label 是给读屏软件念的。
+  @Builder arrowBtn(icon: string, label: string, cb: () => void) {
     Row() {
-      // v4.23：arrow_left/right 在 fs16 墨迹最短边 12.0vp，满足 2.1.4.3.2
-      SymbolGlyph(sym(icon)).fontSize(16).fontColor([tc(this.dark, '#7C8F9F', 1)])
+      Row() {
+        // v4.23：arrow_left/right 在 fs16 墨迹最短边 12.0vp，满足 2.1.4.3.2
+        SymbolGlyph(sym(icon)).fontSize(S.iconSize).fontColor([tc(this.pal, '#7C8F9F', 1)])
+      }
+      .width(22)
+      .height(22)
+      .borderRadius(S.radiusSm)
+      .backgroundColor(tk(this.pal, 'card'))
+      .border({ width: 1, color: tk(this.pal, 'line') })
+      .justifyContent(FlexAlign.Center)
+      .alignItems(VerticalAlign.Center)
     }
-    .width(22)
-    .height(22)
-    .borderRadius(7)
-    .backgroundColor(tk(this.dark, 'card'))
-    .border({ width: 1, color: tk(this.dark, 'line') })
+    .width(40)
+    .height(40)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .onClick(() => { cb(); })
+    .accessibilityText(label)
   }
 
   build() {
-    Row({ space: 8 }) {
-      Text(this.title).fontSize(13.5).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text'))
+    Row({  space: S.spaceLg  }) {
+      Text(this.title).fontSize(S.midSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text'))
       if (this.count.length > 0) {
-        Text(this.count).fontSize(9).fontColor(tk(this.dark, 'textHint'))
+        Text(this.count).fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
       }
       Blank()
       if (this.rightMode === 'arrows') {
-        Row({ space: 6 }) {
-          this.arrowBtn('left', this.onPrev)
-          this.arrowBtn('right', this.onNext)
+        Row({  space: S.spaceMd  }) {
+          this.arrowBtn('left', '上一个', this.onPrev)
+          this.arrowBtn('right', '下一个', this.onNext)
         }
       } else if (this.rightMode === 'add') {
-        Row({ space: 3 }) {
-          SymbolGlyph(sym('plus')).fontSize(14).fontColor([onFill(this.dark)])
-          Text(this.rightText).fontSize(10).fontColor(onFill(this.dark))
+        // v5.15 可访问性：外面套 40 高的透明热区，按钮本身的样子不变
+        Row() {
+          Row({  space: S.spaceSm  }) {
+            SymbolGlyph(sym('plus')).fontSize(S.cardTitleSize).fontColor([onFill(this.pal)])
+            Text(this.rightText).fontSize(S.subSize).fontColor(onFill(this.pal))
+          }
+          .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceSm, bottom: S.spaceSm  })
+          .borderRadius(S.radiusSm)
+          .backgroundColor(tk(this.pal, 'brand'))
+          .alignItems(VerticalAlign.Center)
         }
-        .padding({ left: 9, right: 10, top: 4, bottom: 4 })
-        .borderRadius(9)
-        .backgroundColor(tk(this.dark, 'brand'))
+        .height(40)
+        .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .onClick(() => { this.onRight(); })
+        .accessibilityText(this.rightText)
       } else if (this.rightMode === 'text') {
-        Text(this.rightText)
-          .fontSize(10)
-          .fontColor(tkInk(this.dark, 'brandDeep'))
-          .onClick(() => { this.onRight(); })
+        // v5.15 可访问性：文字按钮也补上 40 高的热区
+        Row() {
+          Text(this.rightText)
+            .fontSize(S.subSize)
+            .fontColor(tkInk(this.pal, 'brandDeep'))
+        }
+        .height(40)
+        .constraintSize({ minWidth: 40 })
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+        .onClick(() => { this.onRight(); })
+        .accessibilityText(this.rightText)
       }
     }
     .width('100%')
-    .margin({ top: 18, bottom: 9 })
-    .padding({ left: 2, right: 2 })
+    .margin({  top: S.space5Xl, bottom: S.spaceXl  })
+    .padding({  left: S.spaceXs, right: S.spaceXs  })
     .alignItems(VerticalAlign.Center)
   }
 }
@@ -202,138 +208,6 @@ export struct SecHead {
 /** 日历格子（.mc-day）
  *  v2.9：加 done/total —— 每天完成了几项，当天一共安排了几项。
  */
-export interface CalCell {
-  n: number;
-  out: boolean;
-  has: boolean;
-  today: boolean;
-  done: number;
-  total: number;
-}
-
-export function calCell(n: number, out: boolean, has: boolean, today: boolean, done: number, total: number): CalCell {
-  return { n: n, out: out, has: has, today: today, done: done, total: total };
-}
-
-/** 完成数热力色：完成越多颜色越深（和热力图一个思路） */
-// v4.22：这一格要印白色完成数，色阶必须能被白字压住 >= 4.6:1。
-// 原来最浅的 #BFE3F3 白字只有 1.36，整条色阶换成深蓝五档（最浅一档压白字 5.12）。
-export function heatColor(n: number): string {
-  if (n <= 0) { return '#BFE3F3'; }
-  if (n === 1) { return '#3F7396'; }
-  if (n === 2) { return '#356A8C'; }
-  if (n === 3) { return '#2A5F80'; }
-  if (n === 4) { return '#1B5170'; }
-  return '#0B3E63';
-}
-
-/** .mc-grid —— 7 列月历 */
-@Component
-export struct MonthCal {
-  // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
-  @Prop cells: CalCell[] = [];
-  @Prop monthLabel: string = '';
-  @Prop doneCount: number = 0;
-
-  build() {
-    Column({ space: 3 }) {
-      Row({ space: 4 }) {
-        Text(this.monthLabel).fontSize(S.subSize).fontWeight(FontWeight.Medium).fontColor(tk(this.dark, 'text'))
-        Blank()
-        Text(`完成 ${this.doneCount} 项`).fontSize(S.microSize + 0.5).fontColor(tk(this.dark, 'textHint'))
-      }
-      .width('100%')
-      .padding({ bottom: 5 })
-
-      Row() {
-        ForEach(['一', '二', '三', '四', '五', '六', '日'], (w: string) => {
-          Row() {
-            Text(w).fontSize(8.5).fontColor(tk(this.dark, 'textHint'))
-          }.layoutWeight(1).justifyContent(FlexAlign.Center).padding({ bottom: 3 })
-        }, (w: string) => w)
-      }
-      .width('100%')
-
-      ForEach(this.rows(), (row: CalCell[], ri: number) => {
-        Row({ space: 3 }) {
-          ForEach(row, (c: CalCell, ci: number) => {
-            Column({ space: 1 }) {
-              // v4.4：补白格（n=0）以前会印出一个「0」，看着像日期
-              Text(c.n > 0 ? `${c.n}` : '')
-                .fontSize(S.subSize - 0.5)
-                .fontWeight(c.today || c.has ? FontWeight.Medium : FontWeight.Normal)
-                .fontColor(c.today ? onFill(this.dark) : (c.out ? tc(this.dark, '#CFDCE7', 1) : (c.done > 0 ? tc(this.dark, '#1F5E7A', 1) : (c.has ? tc(this.dark, '#2F6C8A', 1) : tc(this.dark, '#54697C', 1)))))
-              // v4.21：原来 7.5vp，低于华为 UX 2.1.4.2 的 8vp 下限；徽标跟着放大到 15
-              Text(c.done > 0 ? `${c.done}` : '')
-                .fontSize(9)
-                .fontColor(onFill(this.dark))
-                .textAlign(TextAlign.Center)
-                .width(15)
-                .height(15)
-                .borderRadius(8)
-                .backgroundColor(c.done > 0 ? heatColor(c.done) : Color.Transparent)
-            }
-            .layoutWeight(1)
-            .height(32)
-            .borderRadius(9)
-            .justifyContent(FlexAlign.Center)
-            .backgroundColor(c.today ? Color.Transparent : (c.done > 0 ? tc(this.dark, '#EAF4FC', 0) : (c.has ? tc(this.dark, '#F6FAFD', 0) : Color.Transparent)))
-            .linearGradient(c.today ? brandGradient() : { angle: 90, colors: [[this.dark ? '#1C2836' : '#FFFFFF', 0], [this.dark ? '#1C2836' : '#FFFFFF', 1]] })
-          }, (c: CalCell, ci: number) => `${ri}-${ci}-${c.n}-${c.done}`)
-        }
-        .width('100%')
-      }, (row: CalCell[], ri: number) => `r${ri}-${row.length}-${row[0] ? row[0].n : 0}`)
-    }
-    .width('100%')
-    .alignItems(HorizontalAlign.Start)
-  }
-
-  private rows(): CalCell[][] {
-    const out: CalCell[][] = [];
-    let cur: CalCell[] = [];
-    for (let i = 0; i < this.cells.length; i++) {
-      cur.push(this.cells[i]);
-      if (cur.length === 7) { out.push(cur); cur = []; }
-    }
-    if (cur.length > 0) { out.push(cur); }
-    return out;
-  }
-}
-
-/** 迷你柱状图（.summary .mini-bars） */
-@Component
-export struct MiniBars {
-  // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
-  @Prop values: number[] = [];
-  @Prop chartHeight: number = 44;
-
-  build() {
-    Row({ space: 4 }) {
-      ForEach(this.values, (v: number, i: number) => {
-        Column()
-          .layoutWeight(1)
-          .height(`${this.hOf(v)}%`)
-          .borderRadius({ topLeft: 4, topRight: 4, bottomLeft: 2, bottomRight: 2 })
-          .linearGradient({ angle: 180, colors: [[this.dark ? '#1E4E5E' : '#BFEAF8', 0], [this.dark ? '#17323E' : '#E4F4FC', 1]] })
-      }, (v: number, i: number) => `mb${i}-${v}`)
-    }
-    .width('100%')
-    .height(this.chartHeight)
-    .alignItems(VerticalAlign.Bottom)
-  }
-
-  private hOf(v: number): number {
-    let max = 1;
-    for (let i = 0; i < this.values.length; i++) {
-      if (this.values[i] > max) { max = this.values[i]; }
-    }
-    return Math.max(8, Math.round(v / max * 100));
-  }
-}
-
-/** 甘特条（.w-row .bar） */
 export interface GanttBar {
   label: string;
   startIdx: number;
@@ -353,7 +227,7 @@ export function ganttBar(label: string, startIdx: number, endIdx: number, bg: st
 @Component
 export struct WeekGantt {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop dayNums: string[] = [];
   @Prop todayIdx: number = -1;
   @Prop bars: GanttBar[] = [];
@@ -361,54 +235,62 @@ export struct WeekGantt {
   onDayTap: (idx: number) => void = () => {};
 
   build() {
-    Column({ space: 0 }) {
+    Column({  space: 0  }) {
       Row() {
         ForEach(this.dayNums, (d: string, i: number) => {
-          Column({ space: 1 }) {
-            Text(['一', '二', '三', '四', '五', '六', '日'][i]).fontSize(9).fontColor(tk(this.dark, 'textHint'))
+          Column({  space: S.spaceXs  }) {
+            Text(['一', '二', '三', '四', '五', '六', '日'][i]).fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
             Row() {
               Text(d)
                 .fontSize(S.subSize)
                 .fontWeight(FontWeight.Medium)
-                .fontColor(i === this.todayIdx ? onFill(this.dark) : (i === this.selectedIdx ? tkInk(this.dark, 'brandDeep') : tc(this.dark, '#5E7183', 1)))
+                .fontColor(i === this.todayIdx ? onFill(this.pal) : (i === this.selectedIdx ? tkInk(this.pal, 'brandDeep') : tc(this.pal, '#5E7183', 1)))
             }
             .width(23)
             .height(23)
-            .borderRadius(12)
+            .borderRadius(S.radiusInner)
             .justifyContent(FlexAlign.Center)
             .border(i === this.selectedIdx && i !== this.todayIdx
-              ? { width: 1.5, color: tk(this.dark, 'brand') }
+              ? { width: 1.5, color: tk(this.pal, 'brand') }
               : { width: 0, color: Color.Transparent })
             .linearGradient(i === this.todayIdx
-              ? brandGradient()
+              ? brandGradient(this.pal)
               : { angle: 90, colors: [['#00000000', 0], ['#00000000', 1]] })
           }
           .layoutWeight(1)
+          // v5.15 可访问性：日期格的可点区域补到 ≥40 高
+          .constraintSize({ minHeight: 40 })
+          .justifyContent(FlexAlign.Center)
           .onClick(() => { this.onDayTap(i); })
-        }, (d: string, i: number) => `wd${i}-${d}-${this.selectedIdx}`)
+          // v5.15：读屏软件念「选择17号」
+          .accessibilityText(`选择${d}号`)
+        }, (d: string, i: number) => `wd${i}-${d}-${this.selectedIdx}-${this.pal}`)
       }
       .width('100%')
 
-      Stack() {
-        ForEach(this.bars, (b: GanttBar, i: number) => {
-          Row() {
-            Text(b.label)
-              .fontSize(S.tinySize)
-              .fontColor(b.fg)
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .height(20)
-          .padding({ left: 9, right: 9 })
-          .borderRadius(7)
-          .backgroundColor(b.bg)
-          .width(`${(b.endIdx - b.startIdx + 1) * 100 / 7}%`)
-          .position({ x: `${b.startIdx * 100 / 7}%`, y: i * 34 + 7 })
-        }, (b: GanttBar, i: number) => `gb${i}-${b.label}`)
+      // v5.4：没有横条时整块不画 —— 以前固定占 34px，空在那儿像多了一截空白。
+      if (this.bars.length > 0) {
+        Stack() {
+          ForEach(this.bars, (b: GanttBar, i: number) => {
+            Row() {
+              Text(b.label)
+                .fontSize(S.tinySize)
+                .fontColor(b.fg)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+            .height(20)
+            .padding({  left: S.spaceXl, right: S.spaceXl  })
+            .borderRadius(S.radiusSm)
+            .backgroundColor(b.bg)
+            .width(`${(b.endIdx - b.startIdx + 1) * 100 / 7}%`)
+            .position({ x: `${b.startIdx * 100 / 7}%`, y: i * 34 + 7 })
+          }, (b: GanttBar, i: number) => `gb${i}-${b.label}-${this.pal}`)
+        }
+        .width('100%')
+        .height(Math.max(34, this.bars.length * 34 + 6))
+        .alignContent(Alignment.TopStart)
       }
-      .width('100%')
-      .height(Math.max(34, this.bars.length * 34 + 6))
-      .alignContent(Alignment.TopStart)
     }
     .width('100%')
   }

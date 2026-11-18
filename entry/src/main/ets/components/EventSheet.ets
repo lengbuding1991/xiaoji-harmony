@@ -10,7 +10,7 @@
  * v4.20：零权限 —— 「提醒」选项整块删掉（本 App 不发系统通知、不申请任何权限）。
  *   remind_min 字段在 db 里保留，老日程的提前量继续生效。
  */
-import { C, onFill, tc, tk } from '../utils/Theme';
+import { onFill, S, tc, tk } from '../utils/Theme';
 import { D } from '../utils/DateUtil';
 import { sym } from './Icon';
 import { SheetHead, FormBox, PickerBox, DateBox, FormErr, SheetActs } from './FormKit';
@@ -20,6 +20,7 @@ import { Confirm } from '../utils/Confirm';
 import { ConfirmDialog } from './ConfirmDialog';
 import { R } from '../utils/Responsive';
 import { onEdgeScrolled, onEdgeWillScroll } from '../utils/EdgeHint';
+import { toast } from '../utils/Toast';
 
 const RULE_KEYS: string[] = ['none', 'daily', 'weekdays', 'weekly', 'monthly'];
 const RULE_LABELS: string[] = ['不重复', '每天', '每个工作日', '每周', '每月'];
@@ -27,7 +28,7 @@ const RULE_LABELS: string[] = ['不重复', '每天', '每个工作日', '每周
 @Component
 export struct EventSheet {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop @Watch('reload') editingId: number = -1;
   /** 新建时的默认日期 yyyy-MM-dd */
   @Prop @Watch('reload') defaultDate: string = '';
@@ -271,6 +272,8 @@ export struct EventSheet {
     this.busy = false;
     if (ok) {
       this.onCancel();
+      // v5.14：删除成功也说一声（原来删完一点声音都没有）。
+      toast(this.getUIContext(), '删掉了');
     } else {
       this.err = Store.I.lastError.length > 0 ? Store.I.lastError : '删除失败，再试一次';
     }
@@ -287,45 +290,45 @@ export struct EventSheet {
         })
       }
       .width('100%')
-      .padding({ left: 18, right: 18, top: 18 })
+      .padding({  left: S.space5Xl, right: S.space5Xl, top: S.space5Xl  })
 
       Scroll() {
-        Column({ space: 11 }) {
+        Column({  space: S.space2Xl  }) {
           FormBox({ label: '标题' }) {
             TextInput({ placeholder: '比如：客户周会', text: this.title })
               .onChange((v: string) => { this.title = v; })
-              .fontSize(12).height(36)
+              .fontSize(S.smallSize).height(36)
               .placeholderFont({ size: 12 })
-              .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-              .fontColor(tk(this.dark, 'text'))
-              .caretColor(tk(this.dark, 'brand'))
-              .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-              .border({ width: 1, color: tk(this.dark, 'line') })
-              .padding({ left: 11, right: 11 })
+              .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+              .fontColor(tk(this.pal, 'text'))
+              .caretColor(tk(this.pal, 'brand'))
+              .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .padding({  left: S.space2Xl, right: S.space2Xl  })
           }
 
           // 全天事件
-          Row({ space: 7 }) {
+          Row({  space: S.spaceLg  }) {
             Row() {
               if (this.allDay) {
                 // v4.23：fs14 的勾盒子 14x14vp，方框放大到 18vp 才装得下
-                SymbolGlyph(sym('check')).fontSize(14).fontColor([onFill(this.dark)])
+                SymbolGlyph(sym('check')).fontSize(S.cardTitleSize).fontColor([onFill(this.pal)])
               }
             }
-            .width(18).height(18).borderRadius(5)
-            .backgroundColor(this.allDay ? tk(this.dark, 'brand') : tk(this.dark, 'card'))
-            .border({ width: 1, color: this.allDay ? tk(this.dark, 'brand') : tk(this.dark, 'line') })
+            .width(18).height(18).borderRadius(S.radiusXs)
+            .backgroundColor(this.allDay ? tk(this.pal, 'brand') : tk(this.pal, 'card'))
+            .border({ width: 1, color: this.allDay ? tk(this.pal, 'brand') : tk(this.pal, 'line') })
             .justifyContent(FlexAlign.Center)
             .alignItems(VerticalAlign.Center)
             .onClick(() => { this.allDay = !this.allDay; })
 
-            Text('全天事件').fontSize(11).fontColor(tc(this.dark, '#5E7183', 1))
+            Text('全天事件').fontSize(S.labelSize).fontColor(tc(this.pal, '#5E7183', 1))
             Blank()
           }
           .width('100%')
           .alignItems(VerticalAlign.Center)
 
-          Column({ space: 11 }) {
+          Column({  space: S.space2Xl  }) {
             FormBox({ label: '开始' }) {
               DateBox({
                 text: this.startText(),
@@ -348,30 +351,30 @@ export struct EventSheet {
           FormBox({ label: '地点' }) {
             TextInput({ placeholder: '可选', text: this.place })
               .onChange((v: string) => { this.place = v; })
-              .fontSize(12).height(36)
+              .fontSize(S.smallSize).height(36)
               .placeholderFont({ size: 12 })
-              .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-              .fontColor(tk(this.dark, 'text'))
-              .caretColor(tk(this.dark, 'brand'))
-              .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-              .border({ width: 1, color: tk(this.dark, 'line') })
-              .padding({ left: 11, right: 11 })
+              .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+              .fontColor(tk(this.pal, 'text'))
+              .caretColor(tk(this.pal, 'brand'))
+              .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .padding({  left: S.space2Xl, right: S.space2Xl  })
           }
 
           FormBox({ label: '备注' }) {
             TextInput({ placeholder: '可选', text: this.note })
               .onChange((v: string) => { this.note = v; })
-              .fontSize(12).height(36)
+              .fontSize(S.smallSize).height(36)
               .placeholderFont({ size: 12 })
-              .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-              .fontColor(tk(this.dark, 'text'))
-              .caretColor(tk(this.dark, 'brand'))
-              .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-              .border({ width: 1, color: tk(this.dark, 'line') })
-              .padding({ left: 11, right: 11 })
+              .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+              .fontColor(tk(this.pal, 'text'))
+              .caretColor(tk(this.pal, 'brand'))
+              .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .padding({  left: S.space2Xl, right: S.space2Xl  })
           }
 
-          Column({ space: 11 }) {
+          Column({  space: S.space2Xl  }) {
             FormBox({ label: '重复', icon: 'undo' }) {
               PickerBox({
                 text: RULE_LABELS[this.ruleIndex()],
@@ -390,7 +393,7 @@ export struct EventSheet {
           .width('100%')
         }
         .width('100%')
-        .padding({ left: 18, right: 18, top: 11, bottom: 18 })
+        .padding({  left: S.space5Xl, right: S.space5Xl, top: S.space2Xl, bottom: S.space5Xl  })
         .alignItems(HorizontalAlign.Start)
       }
       .onScrollEdge(onEdgeScrolled)
@@ -405,7 +408,7 @@ export struct EventSheet {
           FormErr({ msg: this.err })
         }
         .width('100%')
-        .padding({ left: 18, right: 18, top: 8 })
+        .padding({  left: S.space5Xl, right: S.space5Xl, top: S.spaceLg  })
       }
 
       SheetActs({
@@ -419,7 +422,7 @@ export struct EventSheet {
       })
     }
     .width('100%')
-    .backgroundColor(tk(this.dark, 'card'))
-    .borderRadius(22)
+    .backgroundColor(tk(this.pal, 'card'))
+    .borderRadius(S.radiusSheet)
   }
 }

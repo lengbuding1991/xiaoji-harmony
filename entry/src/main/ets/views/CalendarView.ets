@@ -7,7 +7,7 @@
 // 新建/编辑日程统一走 EventSheet。
 import { Store } from '../store/Store';
 import { advanceDate } from '../db/Repo';
-import { areaColor, areaLabel, C, S, tc, tk, tkInk } from '../utils/Theme';
+import { areaColor, areaLabel, S, tc, tk, tkInk } from '../utils/Theme';
 import { R } from '../utils/Responsive';
 import { D } from '../utils/DateUtil';
 import { Card } from '../components/Card';
@@ -31,10 +31,14 @@ const DAY_GAP_MIN: number = 60;
 @Component
 export struct CalendarView {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @State tick: number = 0;
   // v4.6：宽屏档位（宽屏时弹层限宽）
   @StorageLink('wb_layout') layoutMode: number = 0;
+  // v5.17：宽屏列数（>1180vp 三列 / >820vp 两列 / 更窄一列）。
+  //   R.cols() 读的是 AppStorage，改窗口大小时不会自己触发本页重画 ⇒ 这里挂一个 @StorageLink，
+  //   窗口宽度一变（旋转、分屏、拖窗口）本页就会重画，栅格列数跟着变。
+  @StorageLink('wb_cols') cols: number = 1;
   @State events: EventItem[] = [];
   // v4.5：周标题里的日期范围也是派生值 ⇒ 进 @State
   @State kWeekLabel: string = '';
@@ -100,6 +104,26 @@ export struct CalendarView {
   /** v4.6：宽屏？ */
   private wideMode(): boolean {
     return this.layoutMode >= 1;
+  }
+
+  /**
+   * v5.17 宽屏两栏：栅格总列数。
+   * 日视图的每条日程是「时间 + 事项」的窄条，铺三列会挤在一起 ⇒ 宽屏最多两列，
+   * 手机（cols=1）一列。
+   */
+  private gridCols(): number {
+    return this.cols >= 2 ? 2 : 1;
+  }
+
+  /**
+   * v5.17 宽屏两栏：某个块占几列（同 HomeView 的写法）。
+   * 权重 3 = 整行，权重 2 = 两列，权重 1 = 一列；手机上永远一列。
+   */
+  private spanFor(weight: number): number {
+    const c: number = this.cols;
+    if (weight >= 3 && c >= 2) { return c; }
+    if (weight >= 2 && c >= 3) { return 2; }
+    return 1;
   }
 
   private syncStore(): void {
@@ -394,11 +418,11 @@ export struct CalendarView {
 
   private toneOf(e: EventItem): string {
     const n: number = e.id % 5;
-    if (n === 0) { return tk(this.dark, 'event'); }
-    if (n === 1) { return tk(this.dark, 'brand'); }
-    if (n === 2) { return tk(this.dark, 'side'); }
-    if (n === 3) { return tk(this.dark, 'media'); }
-    return tk(this.dark, 'life');
+    if (n === 0) { return tk(this.pal, 'event'); }
+    if (n === 1) { return tk(this.pal, 'brand'); }
+    if (n === 2) { return tk(this.pal, 'side'); }
+    if (n === 3) { return tk(this.pal, 'media'); }
+    return tk(this.pal, 'life');
   }
 
   // ── 打开弹窗 ──
@@ -435,116 +459,122 @@ export struct CalendarView {
   // ── 周视图：每天一卡 ──
   @Builder dayCard(d: Date) {
     Column() {
-      Row({ space: 8 }) {
+      Row({  space: S.spaceLg  }) {
         Text(`周${D.weekdayOf(D.key(d))}`)
-          .fontSize(11)
-          .fontColor(tc(this.dark, '#8FA2B3', 1))
+          .fontSize(S.labelSize)
+          .fontColor(tc(this.pal, '#8FA2B3', 1))
         Text(D.md(D.key(d)))
-          .fontSize(14)
+          .fontSize(S.cardTitleSize)
           .fontWeight(FontWeight.Medium)
-          .fontColor(tc(this.dark, '#33485A', 1))
+          .fontColor(tc(this.pal, '#33485A', 1))
         Blank()
         if (D.key(d) === D.today()) {
           Text('今天')
-            .fontSize(9)
-            .fontColor(tc(this.dark, '#9BAEBD', 1))
-            .backgroundColor(tc(this.dark, '#F2F7FB', 0))
-            .borderRadius(20)
-            .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+            .fontSize(S.tinySize)
+            .fontColor(tc(this.pal, '#9BAEBD', 1))
+            .backgroundColor(tc(this.pal, '#F2F7FB', 0))
+            .borderRadius(S.radiusCard)
+            .padding({  left: S.spaceMd, right: S.spaceMd, top: S.spaceXs, bottom: S.spaceXs  })
         }
         if (this.dayCount(d) > 0) {
           Text(`${this.dayCount(d)}`)
-            .fontSize(9)
-            .fontColor(tc(this.dark, '#9BAEBD', 1))
-            .backgroundColor(tc(this.dark, '#F2F7FB', 0))
-            .borderRadius(20)
-            .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+            .fontSize(S.tinySize)
+            .fontColor(tc(this.pal, '#9BAEBD', 1))
+            .backgroundColor(tc(this.pal, '#F2F7FB', 0))
+            .borderRadius(S.radiusCard)
+            .padding({  left: S.spaceMd, right: S.spaceMd, top: S.spaceXs, bottom: S.spaceXs  })
         }
-        SymbolGlyph(sym('plus'))
-          .fontSize(14)
-          .fontColor([tc(this.dark, '#C3D2DE', 1)])
-          .padding(2)
-          .onClick(() => { this.openNew(D.key(d), 0); })
+        // v5.15 可访问性：＋号原来只有 ~20×20 ⇒ 外层套 40×40 的透明热区，图标本身不变
+        Row() {
+          SymbolGlyph(sym('plus'))
+            .fontSize(S.cardTitleSize)
+            .fontColor([tc(this.pal, '#C3D2DE', 1)])
+            .padding(2)
+        }
+        .width(40).height(40)
+        .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
+        .onClick(() => { this.openNew(D.key(d), 0); })
+        .accessibilityText(`给${D.md(D.key(d))}加个日程`)
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
-      .margin({ bottom: 9 })
+      .margin({  bottom: S.spaceXl  })
 
       // 日程
       ForEach(this.eventsOf(D.key(d)), (e: EventItem) => {
-        Row({ space: 9 }) {
+        Row({  space: S.spaceXl  }) {
           Text(e.all_day === 1 ? '全天' : `${D.hm(e.start_at)}–${e.end_at !== null ? D.hm(e.end_at) : this.hmOf(this.minutesOf(e.start_at) + 45)}`)
-            .fontSize(10)
-            .fontColor(tc(this.dark, '#5E7183', 1))
+            .fontSize(S.subSize)
+            .fontColor(tc(this.pal, '#5E7183', 1))
             .flexShrink(0)
           Text(e.title)
-            .fontSize(11)
+            .fontSize(S.labelSize)
             .fontWeight(FontWeight.Medium)
-            .fontColor(tc(this.dark, '#2C4257', 1))
+            .fontColor(tc(this.pal, '#2C4257', 1))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
           if (e.location !== null && e.location.length > 0) {
             Text(e.location)
-              .fontSize(8.5)
-              .fontColor(tk(this.dark, 'textHint'))
+              .fontSize(S.microSize)
+              .fontColor(tk(this.pal, 'textHint'))
               .maxLines(1)
               .flexShrink(0)
           }
         }
         .width('100%')
-        .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-        .borderRadius(9)
-        .backgroundColor(tc(this.dark, '#F7FBFE', 0))
-        .margin({ bottom: 5 })
+        .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
+        .borderRadius(S.radiusSm)
+        .backgroundColor(tc(this.pal, '#F7FBFE', 0))
+        .margin({  bottom: S.spaceMd  })
         .alignItems(VerticalAlign.Center)
         .onClick(() => { this.openEdit(e.id); })
       }, (e: EventItem) => `w-${e.id}-${this.tick}`)
 
       // 当天到期的任务
       ForEach(this.tasksOf(D.key(d)), (t: Task) => {
-        Row({ space: 9 }) {
-          Text('任务').fontSize(10).fontColor(tc(this.dark, '#A8B8C6', 1)).flexShrink(0)
-          Row().width(5).height(5).borderRadius(3).backgroundColor(areaColor(this.dark, t.area))
+        Row({  space: S.spaceXl  }) {
+          Text('任务').fontSize(S.subSize).fontColor(tc(this.pal, '#A8B8C6', 1)).flexShrink(0)
+          Row().width(5).height(5).borderRadius(S.radiusDot).backgroundColor(areaColor(this.pal, t.area))
           Text(t.title)
-            .fontSize(11)
+            .fontSize(S.labelSize)
             .fontWeight(FontWeight.Medium)
-            .fontColor(tc(this.dark, '#2C4257', 1))
+            .fontColor(tc(this.pal, '#2C4257', 1))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
         }
         .width('100%')
-        .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-        .borderRadius(9)
-        .backgroundColor(tc(this.dark, '#F7FBFE', 0))
-        .margin({ bottom: 5 })
+        .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
+        .borderRadius(S.radiusSm)
+        .backgroundColor(tc(this.pal, '#F7FBFE', 0))
+        .margin({  bottom: S.spaceMd  })
         .alignItems(VerticalAlign.Center)
       }, (t: Task) => `wt-${t.id}-${t.status}-${this.tick}`)
 
       // 空态：这天空着（周视图压成横排，对齐 .cal2-mweek.week .mw-empty）
       if (this.dayCount(d) === 0) {
-        Row({ space: 7 }) {
-          SymbolGlyph(sym('plus')).fontSize(13).fontColor([tc(this.dark, '#C7D8E4', 1)])
-          Text('这天空着').fontSize(11).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#8FA2B3', 1))
+        Row({  space: S.spaceLg  }) {
+          SymbolGlyph(sym('plus')).fontSize(S.midSize).fontColor([tc(this.pal, '#C7D8E4', 1)])
+          Text('这天空着').fontSize(S.labelSize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#8FA2B3', 1))
         }
         .width('100%')
         .height(38)
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
-        .padding({ top: 11, bottom: 11 })
-        .borderRadius(10)
-        .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
+        .padding({  top: S.space2Xl, bottom: S.space2Xl  })
+        .borderRadius(S.radiusBtn)
+        .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
         .onClick(() => { this.openNew(D.key(d), 0); })
       }
     }
     .width('100%')
-    .padding({ left: 13, right: 13, top: 12, bottom: 12 })
-    .borderRadius(14)
-    .backgroundColor(tk(this.dark, 'card'))
-    .border({ width: 1, color: tk(this.dark, 'line') })
+    .padding({  left: S.space3Xl, right: S.space3Xl, top: S.space2Xl, bottom: S.space2Xl  })
+    .borderRadius(S.radiusInner)
+    .backgroundColor(tk(this.pal, 'card'))
+    .border({ width: 1, color: tk(this.pal, 'line') })
     .alignItems(HorizontalAlign.Start)
-    .margin({ bottom: 10 })
+    .margin({  bottom: S.spaceXl  })
   }
 
   private dayCount(d: Date): number {
@@ -553,104 +583,127 @@ export struct CalendarView {
   }
 
   // ── 日视图：时间轴 + 空闲块 ──
+  /**
+   * 日视图时间轴上的单条日程（时间 + 事项 + 地点 + 关联任务）。
+   * v5.17：抽成 builder，宽屏铺两列时和手机单列时共用同一份，排版不会走样。
+   */
+  @Builder dayEventRow(e: EventItem) {
+    Row({  space: S.spaceXl  }) {
+      Column({  space: S.spaceXs  }) {
+        Text(D.hm(e.start_at)).fontSize(S.subSize).fontColor(tc(this.pal, '#5E7183', 1))
+        if (e.end_at !== null) {
+          Text(D.hm(e.end_at)).fontSize(S.microSize).fontColor(tc(this.pal, '#A8B8C6', 1))
+        }
+      }
+      .width(38)
+      .alignItems(HorizontalAlign.End)
+      .flexShrink(0)
+
+      Column({  space: S.spaceXs  }) {
+        Text(e.title)
+          .fontSize(S.labelSize)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(tc(this.pal, '#2C4257', 1))
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+        if (e.location !== null && e.location.length > 0) {
+          Text(e.location).fontSize(S.microSize).fontColor(tc(this.pal, '#9BAEBD', 1)).width('100%')
+        }
+        // v4.12：关联的任务合并到日程这一行里
+        if (this.linkedTaskTitles(e.id).length > 0) {
+          Text(`任务：${this.linkedTaskTitles(e.id)}`)
+            .fontSize(S.tinySize).fontColor(tc(this.pal, '#7E97AC', 1)).width('100%').maxLines(2)
+        }
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
+    .borderRadius(S.radiusSm)
+    .backgroundColor(tc(this.pal, '#F7FBFE', 0))
+    .border({ width: { left: 3 }, color: { left: this.toneOf(e) } })
+    .alignItems(VerticalAlign.Center)
+    .margin({  bottom: S.spaceMd  })
+    .onClick(() => { this.openEdit(e.id); })
+  }
+
   // 日视图左侧时间轴（对齐 .cal2-scroll 里的日程块）
   @Builder dayTimeline() {
     Column() {
       // v4.4：全天日程单独一行 —— 以前在时间轴上显示成 00:00，看不出是全天
       if (this.kSelAllDay.length > 0) {
-        Column({ space: 5 }) {
-          Text('全天').fontSize(10).fontColor(tc(this.dark, '#5E7183', 1)).fontWeight(FontWeight.Medium)
+        Column({  space: S.spaceMd  }) {
+          Text('全天').fontSize(S.subSize).fontColor(tc(this.pal, '#5E7183', 1)).fontWeight(FontWeight.Medium)
           ForEach(this.kSelAllDay, (e: EventItem) => {
-            Row({ space: 9 }) {
+            Row({  space: S.spaceXl  }) {
               Text(e.title)
-                .fontSize(11.5)
+                .fontSize(S.labelSize)
                 .fontWeight(FontWeight.Medium)
-                .fontColor(tc(this.dark, '#2C4257', 1))
+                .fontColor(tc(this.pal, '#2C4257', 1))
                 .maxLines(2)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .layoutWeight(1)
               if (e.location !== null && e.location.length > 0) {
-                Text(e.location).fontSize(8.5).fontColor(tc(this.dark, '#9BAEBD', 1))
+                Text(e.location).fontSize(S.microSize).fontColor(tc(this.pal, '#9BAEBD', 1))
               }
             }
             .width('100%')
-            .padding({ left: 9, right: 9, top: 8, bottom: 8 })
-            .borderRadius(9)
-            .backgroundColor(tc(this.dark, '#F7FBFE', 0))
+            .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
+            .borderRadius(S.radiusSm)
+            .backgroundColor(tc(this.pal, '#F7FBFE', 0))
             .border({ width: { left: 3 }, color: { left: this.toneOf(e) } })
             .alignItems(VerticalAlign.Center)
-            .margin({ bottom: 6 })
+            .margin({  bottom: S.spaceMd  })
             .onClick(() => { this.openEdit(e.id); })
           }, (e: EventItem) => `ad-${e.id}-${this.tick}`)
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
-        .margin({ bottom: 4 })
+        .margin({  bottom: S.spaceSm  })
       }
-      ForEach(this.kSelEvents, (e: EventItem) => {
-        Row({ space: 10 }) {
-          Column({ space: 1 }) {
-            Text(D.hm(e.start_at)).fontSize(10).fontColor(tc(this.dark, '#5E7183', 1))
-            if (e.end_at !== null) {
-              Text(D.hm(e.end_at)).fontSize(8.5).fontColor(tc(this.dark, '#A8B8C6', 1))
-            }
-          }
-          .width(38)
-          .alignItems(HorizontalAlign.End)
-          .flexShrink(0)
-
-          Column({ space: 2 }) {
-            Text(e.title)
-              .fontSize(11.5)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(tc(this.dark, '#2C4257', 1))
-              .maxLines(2)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (this.gridCols() >= 2) {
+        // v5.17 宽屏：日视图「这天的日程列表」铺两列（周视图不动，手机走下面的单列分支）。
+        GridRow({ columns: this.gridCols(), gutter: { x: S.gapLg, y: 0 } }) {
+          ForEach(this.kSelEvents, (e: EventItem) => {
+            GridCol({ span: this.spanFor(1) }) {
+              Column() {
+                this.dayEventRow(e)
+              }
               .width('100%')
-            if (e.location !== null && e.location.length > 0) {
-              Text(e.location).fontSize(8.5).fontColor(tc(this.dark, '#9BAEBD', 1)).width('100%')
             }
-            // v4.12：关联的任务合并到日程这一行里
-            if (this.linkedTaskTitles(e.id).length > 0) {
-              Text(`任务：${this.linkedTaskTitles(e.id)}`)
-                .fontSize(9).fontColor(tc(this.dark, '#7E97AC', 1)).width('100%').maxLines(2)
-            }
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
+          }, (e: EventItem) => `de-${e.id}-${this.tick}`)
         }
         .width('100%')
-        .padding({ left: 9, right: 9, top: 8, bottom: 8 })
-        .borderRadius(9)
-        .backgroundColor(tc(this.dark, '#F7FBFE', 0))
-        .border({ width: { left: 3 }, color: { left: this.toneOf(e) } })
-        .alignItems(VerticalAlign.Center)
-        .margin({ bottom: 6 })
-        .onClick(() => { this.openEdit(e.id); })
-      }, (e: EventItem) => `de-${e.id}-${this.tick}`)
+      } else {
+        ForEach(this.kSelEvents, (e: EventItem) => {
+          this.dayEventRow(e)
+        }, (e: EventItem) => `de-${e.id}-${this.tick}`)
+      }
 
       if (this.kSelEvents.length === 0 && this.kSelAllDay.length === 0) {
-        Column({ space: 5 }) {
-          SymbolGlyph(sym('plus')).fontSize(16).fontColor([tc(this.dark, '#C7D8E4', 1)])
-          Text('这天空着').fontSize(11).fontColor(tc(this.dark, '#9BAEBD', 1))
-          Text('点这里安排点什么').fontSize(9).fontColor(tc(this.dark, '#C2D0DB', 1))
+        Column({  space: S.spaceMd  }) {
+          SymbolGlyph(sym('plus')).fontSize(S.iconSize).fontColor([tc(this.pal, '#C7D8E4', 1)])
+          Text('这天空着').fontSize(S.labelSize).fontColor(tc(this.pal, '#9BAEBD', 1))
+          Text('点这里安排点什么').fontSize(S.tinySize).fontColor(tc(this.pal, '#C2D0DB', 1))
         }
         .width('100%')
-        .padding({ top: 20, bottom: 20 })
-        .borderRadius(10)
-        .border({ width: 1, color: tc(this.dark, tc(this.dark, '#DDE9F3', 2), 2), style: BorderStyle.Dashed })
+        .padding({  top: S.space6Xl, bottom: S.space6Xl  })
+        .borderRadius(S.radiusBtn)
+        .border({ width: 1, color: tc(this.pal, tc(this.pal, '#DDE9F3', 2), 2), style: BorderStyle.Dashed })
         .alignItems(HorizontalAlign.Center)
         .onClick(() => { this.openNew(this.selected, 0); })
       }
 
       // 点时间轴空白也能新建
-      Row({ space: 5 }) {
-        SymbolGlyph(sym('plus')).fontSize(14).fontColor([tc(this.dark, '#9FE0DC', 1)])
-        Text('点这里排一件事').fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1))
+      Row({  space: S.spaceMd  }) {
+        SymbolGlyph(sym('plus')).fontSize(S.cardTitleSize).fontColor([tc(this.pal, '#523593', 1)])
+        Text('点这里排一件事').fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1))
       }
       .width('100%')
       .justifyContent(FlexAlign.Center)
-      .padding({ top: 8, bottom: 2 })
+      .padding({  top: S.spaceLg, bottom: S.spaceXs  })
       .onClick(() => { this.openNew(this.selected, 0); })
     }
     .width('100%')
@@ -666,30 +719,30 @@ export struct CalendarView {
       bodyPadBottom: 10
     }) {
       if (this.kSelTasks.length === 0) {
-        Text('这天没有任务截止，清爽。').fontSize(8.5).fontColor(tc(this.dark, '#A8B8C6', 1)).width('100%')
+        Text('这天没有任务截止，清爽。').fontSize(S.microSize).fontColor(tc(this.pal, '#A8B8C6', 1)).width('100%')
       } else {
         ForEach(this.kSelTasks, (t: Task) => {
-          Column({ space: 1 }) {
+          Column({  space: S.spaceXs  }) {
             Text(t.title)
-              .fontSize(11).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#2C4257', 1))
+              .fontSize(S.labelSize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#2C4257', 1))
               .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-            Row({ space: 5 }) {
+            Row({  space: S.spaceMd  }) {
               Text(this.taskKindTag(t))
-                .fontSize(8).fontColor(tkInk(this.dark, 'brandDeep'))
-                .backgroundColor(tk(this.dark, 'brandSoft')).borderRadius(5)
-                .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+                .fontSize(S.microSize).fontColor(tkInk(this.pal, 'brandDeep'))
+                .backgroundColor(tk(this.pal, 'brandSoft')).borderRadius(S.radiusXs)
+                .padding({  left: S.spaceMd, right: S.spaceMd, top: S.spaceXs, bottom: S.spaceXs  })
               Text(`${t.project !== null && t.project.length > 0 ? t.project : areaLabel(t.area)}${t.priority === 'high' ? ' · 要紧' : ''}`)
-                .fontSize(9).fontColor(tc(this.dark, '#A8B8C6', 1)).layoutWeight(1)
+                .fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1)).layoutWeight(1)
             }
             .width('100%')
             .alignItems(VerticalAlign.Center)
           }
           .width('100%')
-          .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-          .borderRadius(10)
-          .backgroundColor(tc(this.dark, '#FBFDFF', 0))
-          .border({ width: { left: 3 }, color: areaColor(this.dark, t.area) })
-          .margin({ bottom: 6 })
+          .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
+          .borderRadius(S.radiusBtn)
+          .backgroundColor(tc(this.pal, '#FBFDFF', 0))
+          .border({ width: { left: 3 }, color: areaColor(this.pal, t.area) })
+          .margin({  bottom: S.spaceMd  })
           .alignItems(HorizontalAlign.Start)
           .onClick(() => { this.onNavigate('tasks'); })
         }, (t: Task) => `ds-${t.id}-${t.status}-${this.tick}`)
@@ -697,60 +750,60 @@ export struct CalendarView {
 
       // .ds-sec：虚线上边框 + 小标题（合并为单元素）
       Text('空着的整块时间')
-        .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).letterSpacing(0.4)
+        .fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1)).letterSpacing(0.4)
         .width('100%')
-        .padding({ top: 12 })
-        .margin({ top: 14, bottom: 6 })
+        .padding({  top: S.space2Xl  })
+        .margin({  top: S.space3Xl, bottom: S.spaceMd  })
         .border({ width: { top: 1 }, color: '#E8F1F8', style: BorderStyle.Dashed })
 
       if (this.kSelGaps.length === 0) {
-        Text('这天排得比较满，注意留白。').fontSize(8.5).fontColor(tc(this.dark, '#A8B8C6', 1)).width('100%')
+        Text('这天排得比较满，注意留白。').fontSize(S.microSize).fontColor(tc(this.pal, '#A8B8C6', 1)).width('100%')
       } else {
         ForEach(this.kSelGaps.slice(0, 4), (g: number[], i: number) => {
-          Row({ space: 8 }) {
+          Row({  space: S.spaceLg  }) {
             Text(`${this.hmOf(g[0])}–${this.hmOf(g[1])}`)
-              .fontSize(9.5).fontColor(tc(this.dark, '#5E7183', 1))
+              .fontSize(S.tinySize).fontColor(tc(this.pal, '#5E7183', 1))
             Blank()
             Text(`${Math.round((g[1] - g[0]) / 60 * 10) / 10} 小时`)
-              .fontSize(9).fontColor(tc(this.dark, '#3AC8C2', 1)).fontWeight(FontWeight.Medium)
+              .fontSize(S.tinySize).fontColor(tc(this.pal, '#523593', 1)).fontWeight(FontWeight.Medium)
           }
           .width('100%')
-          .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-          .borderRadius(10)
-          .backgroundColor(tc(this.dark, '#FBFDFF', 0))
-          .border({ width: 1, color: tc(this.dark, tc(this.dark, '#D9E8F4', 2), 2), style: BorderStyle.Dashed })
+          .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
+          .borderRadius(S.radiusBtn)
+          .backgroundColor(tc(this.pal, '#FBFDFF', 0))
+          .border({ width: 1, color: tc(this.pal, tc(this.pal, '#D9E8F4', 2), 2), style: BorderStyle.Dashed })
           .alignItems(VerticalAlign.Center)
-          .margin({ bottom: 5 })
+          .margin({  bottom: S.spaceMd  })
           .onClick(() => { this.openNew(this.selected, g[0]); })
         }, (g: number[], i: number) => `gap-${i}-${g[0]}-${this.tick}`)
       }
 
       // .ds-foot：两个统计格
-      Row({ space: 8 }) {
-        Column({ space: 1 }) {
+      Row({  space: S.spaceLg  }) {
+        Column({  space: S.spaceXs  }) {
           Text(`${this.eventsOf(this.selected).length}`)
-            .fontSize(14).fontColor(tc(this.dark, '#1F9E9A', 1)).fontWeight(FontWeight.Medium)
-          Text('个日程').fontSize(9).fontColor(tc(this.dark, '#A8B8C6', 1))
+            .fontSize(S.cardTitleSize).fontColor(tc(this.pal, '#3F2675', 1)).fontWeight(FontWeight.Medium)
+          Text('个日程').fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1))
         }
         .layoutWeight(1)
-        .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-        .borderRadius(10)
-        .backgroundColor(tc(this.dark, '#F7FBFE', 0))
+        .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
+        .borderRadius(S.radiusBtn)
+        .backgroundColor(tc(this.pal, '#F7FBFE', 0))
         .alignItems(HorizontalAlign.Start)
 
-        Column({ space: 1 }) {
+        Column({  space: S.spaceXs  }) {
           Text(`${this.kSelOccupied}h`)
-            .fontSize(14).fontColor(tc(this.dark, '#1F9E9A', 1)).fontWeight(FontWeight.Medium)
-          Text('已占时间').fontSize(9).fontColor(tc(this.dark, '#A8B8C6', 1))
+            .fontSize(S.cardTitleSize).fontColor(tc(this.pal, '#3F2675', 1)).fontWeight(FontWeight.Medium)
+          Text('已占时间').fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1))
         }
         .layoutWeight(1)
-        .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-        .borderRadius(10)
-        .backgroundColor(tc(this.dark, '#F7FBFE', 0))
+        .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
+        .borderRadius(S.radiusBtn)
+        .backgroundColor(tc(this.pal, '#F7FBFE', 0))
         .alignItems(HorizontalAlign.Start)
       }
       .width('100%')
-      .margin({ top: 10 })
+      .margin({  top: S.spaceXl  })
     }
   }
 
@@ -797,38 +850,44 @@ export struct CalendarView {
 
       Scroll() {
         Column() {
-          Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+          Text(`${this.tick}`).fontSize(S.hiddenSize).width(1).height(1).opacity(0)
 
           this.pageTop()
 
           // page-head
-          Column({ space: 5 }) {
-            Text('CALENDAR · 日历安排').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
+          Column({  space: S.spaceMd  }) {
+            Text('CALENDAR · 日历安排').fontSize(S.tinySize).fontColor(tc(this.pal, '#9DB0C1', 1)).letterSpacing(1.6)
             Text(this.view === 0 ? '这一周，先占住时间。' : '这一天，先占住时间。')
-              .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
+              .fontSize(S.sectionSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text')).letterSpacing(-0.2)
             Text(this.view === 0
               // v4.4：App 里没有拖动改时间的功能，别再承诺
               ? `${this.kWeekLabel} · ${this.kWeekCount} 个日程`
-              : `${D.md(this.selected)} ${D.weekdayFull(D.parse(this.selected))} · ${this.kSelEvents.length + this.kSelAllDay.length} 个日程`)
-              .fontSize(11)
-              .fontColor(tk(this.dark, 'textSub'))
+              : `${D.mdWeek(this.selected)} · ${this.kSelEvents.length + this.kSelAllDay.length} 个日程`)
+              .fontSize(S.labelSize)
+              .fontColor(tk(this.pal, 'textSub'))
           }
           .width('100%')
           .alignItems(HorizontalAlign.Start)
-          .padding({ top: 14, bottom: 12 })
+          .padding({  top: S.spaceXl, bottom: S.spaceXl  })
 
           // 视图切换 + 翻页
-          Row({ space: 6 }) {
+          Row({  space: S.spaceMd  }) {
             Chip({ text: '周', active: this.view === 0, onTap: () => { this.view = 0; } })
             Chip({ text: '日', active: this.view === 1, onTap: () => { this.view = 1; } })
             Blank()
+            // v5.15 可访问性：上一个箭头原来只有 28×28 ⇒ 外层套 40×40 的透明热区，箭头芯片本身不变
             Row() {
-              // v4.23：arrow_left 在 fs16 墨迹 12.0x12.0vp，满足 2.1.4.3.2
-              SymbolGlyph(sym('left')).fontSize(16).fontColor([tc(this.dark, '#7C8F9F', 1)])
+              Row() {
+                // v4.23：arrow_left 在 fs16 墨迹 12.0x12.0vp，满足 2.1.4.3.2
+                SymbolGlyph(sym('left')).fontSize(S.iconSize).fontColor([tc(this.pal, '#7C8F9F', 1)])
+              }
+              .width(28).height(28).borderRadius(S.radiusSm)
+              .backgroundColor(tk(this.pal, 'card'))
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .justifyContent(FlexAlign.Center)
+              .alignItems(VerticalAlign.Center)
             }
-            .width(28).height(28).borderRadius(8)
-            .backgroundColor(tk(this.dark, 'card'))
-            .border({ width: 1, color: tk(this.dark, 'line') })
+            .width(40).height(40)
             .justifyContent(FlexAlign.Center)
             .alignItems(VerticalAlign.Center)
             .onClick(() => {
@@ -840,29 +899,42 @@ export struct CalendarView {
                 this.recalc();
               }
             })
+            .accessibilityText(this.view === 0 ? '上一周' : '前一天')
 
-            Text('今天')
-              .fontSize(11)
-              .fontColor(tc(this.dark, '#6A7F92', 1))
-              .height(28)
-              .padding({ left: 10, right: 10 })
-              .borderRadius(8)
-              .backgroundColor(tk(this.dark, 'card'))
-              .border({ width: 1, color: tk(this.dark, 'line') })
-              .textAlign(TextAlign.Center)
-              .onClick(() => {
-                this.weekOffset = 0;
-                this.selected = D.today();
-                this.recalc();
-              })
-
+            // v5.15 可访问性：「今天」原来只有 28 高 ⇒ 外层套 40 高的透明热区，按钮本身不变
             Row() {
-              // v4.23：arrow_right 在 fs16 墨迹 14.3x12.0vp，满足 2.1.4.3.2
-              SymbolGlyph(sym('right')).fontSize(16).fontColor([tc(this.dark, '#7C8F9F', 1)])
+              Text('今天')
+                .fontSize(S.labelSize)
+                .fontColor(tc(this.pal, '#6A7F92', 1))
+                .height(28)
+                .padding({  left: S.spaceXl, right: S.spaceXl  })
+                .borderRadius(S.radiusSm)
+                .backgroundColor(tk(this.pal, 'card'))
+                .border({ width: 1, color: tk(this.pal, 'line') })
+                .textAlign(TextAlign.Center)
             }
-            .width(28).height(28).borderRadius(8)
-            .backgroundColor(tk(this.dark, 'card'))
-            .border({ width: 1, color: tk(this.dark, 'line') })
+            .height(40)
+            .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
+            .onClick(() => {
+              this.weekOffset = 0;
+              this.selected = D.today();
+              this.recalc();
+            })
+            .accessibilityText('回到今天')
+
+            // v5.15 可访问性：下一个箭头原来只有 28×28 ⇒ 外层套 40×40 的透明热区，箭头芯片本身不变
+            Row() {
+              Row() {
+                // v4.23：arrow_right 在 fs16 墨迹 14.3x12.0vp，满足 2.1.4.3.2
+                SymbolGlyph(sym('right')).fontSize(S.iconSize).fontColor([tc(this.pal, '#7C8F9F', 1)])
+              }
+              .width(28).height(28).borderRadius(S.radiusSm)
+              .backgroundColor(tk(this.pal, 'card'))
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .justifyContent(FlexAlign.Center)
+              .alignItems(VerticalAlign.Center)
+            }
+            .width(40).height(40)
             .justifyContent(FlexAlign.Center)
             .alignItems(VerticalAlign.Center)
             .onClick(() => {
@@ -874,10 +946,11 @@ export struct CalendarView {
                 this.recalc();
               }
             })
+            .accessibilityText(this.view === 0 ? '下一周' : '后一天')
           }
           .width('100%')
           .alignItems(VerticalAlign.Center)
-          .margin({ bottom: 12 })
+          .margin({  bottom: S.space2Xl  })
 
           // 周视图：每天一卡
           if (this.view === 0) {
@@ -891,7 +964,7 @@ export struct CalendarView {
           } else {
             // 日视图：时间轴卡 + 「这天要做」卡（对齐工作台 day-side）
             Card({
-              title: `${D.md(this.selected)} ${D.weekdayFull(D.parse(this.selected))}`,
+              title: D.mdWeek(this.selected),
               // v4.12：跟日程关联上的任务已经合并进日程那一行，计数不再重复算
               sub: `${this.eventsOf(this.selected).length} 个日程 · ${this.kSelTasks.length} 件任务`,
               headMode: 'add',
@@ -908,12 +981,15 @@ export struct CalendarView {
           }
 
           // 工作台手机端 .cal2-card .cal2-foot{display:none}：去掉无实现的提示条，只留底部留白
-          Column().width('100%').height(S.pageBottom)
+          Column().width('100%').height(R.bottomPad())
         }
         .width('100%')
-        .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+        .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop  })
         .alignItems(HorizontalAlign.Start)
       }
+        // v5.16：滚动时把右下角悬浮按钮藏起来（它正好压在内容上），停了就回来
+        .onDidScroll((x: number, y: number) => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+        .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
       .onScrollEdge(onEdgeScrolled)
       .onWillScroll(onEdgeWillScroll)
       .align(Alignment.TopStart)
@@ -921,7 +997,8 @@ export struct CalendarView {
       .height('100%')
       .scrollBar(BarState.Off)
       .constraintSize({ maxWidth: 1240 })
-      .backgroundColor(tk(this.dark, 'bg'))
+      // v5.0：页面底色改成透明，让 Index 根 Stack 上的大光斑透出来
+      .backgroundColor(Color.Transparent)
       .edgeEffect(EdgeEffect.Spring)
       .bindSheet($$this.showSheet, this.sheetContent(), {
         // v4.26：宽屏时给「窗口高度」这个绝对值，别写 '100%'

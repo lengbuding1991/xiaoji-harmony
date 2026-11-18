@@ -1,8 +1,8 @@
 // 任务面板
 // 对齐「个人工作台」components/TasksPage.tsx：page-head → tstats 4 个 → filters 胶囊
 // → kanban 三列（手机上竖排）→ tasks-extra 两张卡（近七天收尾节奏 / 刚刚做完的）。
-import { Store, isConsumedRepeat } from '../store/Store';
-import { areaColor, areaLabel, C, catBg, catColor, onFill, S, tc, tk } from '../utils/Theme';
+import { Store, isConsumedRepeat, isOverdue, overdueDays } from '../store/Store';
+import { areaColor, areaLabel, brandGradient, cardShadow, catBg, catColor, misc, onFill, S, tc, tk } from '../utils/Theme';
 import { R } from '../utils/Responsive';
 import { D } from '../utils/DateUtil';
 import { Card } from '../components/Card';
@@ -32,11 +32,13 @@ export struct TasksView {
   // v4.6：宽屏档位（宽屏时弹层限宽）
   @StorageLink('wb_layout') layoutMode: number = 0;
   // v4.8：深色模式开关（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @State tasks: Task[] = [];
   @State area: string = 'all';
   @State due: string = 'all';
   @State showAdd: boolean = false;
+  // v5.16：筛选面板（领域 6 个 + 时间 4 个，原先十个 chip 占两行，现在收成一行摘要 + 弹层）
+  @State showFilter: boolean = false;
   // v4.26（平板竖屏）：宽屏的弹层不再用 bindSheet。
   //   bindSheet 的面板高度是平台按「内容高度」算的（平板竖屏实测只有 560vp），
   //   卡片会被裁掉底部「保存/取消」，自己画的遮罩也只能盖住面板那一块。
@@ -144,7 +146,7 @@ export struct TasksView {
       else if (!isConsumedRepeat(t)) { gDone += 1; }
       if (t.status !== 'done') {
         open += 1;
-        if (this.isOverdue(t)) { over += 1; }
+        if (isOverdue(t)) { over += 1; }
         // v4.14：长期任务 = 没有截止时间的未完成任务
         if (!this.hasDue(t)) { forever += 1; }
       } else if (!isConsumedRepeat(t)) {
@@ -203,7 +205,7 @@ export struct TasksView {
         if (D.diffDays(d, ws) < 0 || D.diffDays(d, ws) > 6) { continue; }
       } else if (this.due === 'overdue') {
         if (t.status === 'done') { continue; }
-        if (!this.isOverdue(t)) { continue; }
+        if (!isOverdue(t)) { continue; }
       } else if (this.due === 'forever') {
         // v4.14：长期任务筛选 —— 没设截止时间、还没做完的
         if (t.status === 'done') { continue; }
@@ -236,18 +238,11 @@ export struct TasksView {
    * 用字符串比日期，不走 D.parse —— 空值会被 parse 成 1899 年，
    * 那会让「没填到期日」的任务全部变成逾期。
    */
-  private isOverdue(t: Task): boolean {
-    if (t.status === 'done') { return false; }
-    if (!this.hasDue(t)) { return false; }
-    return (t.due_date as string).slice(0, 10) < D.today();
-  }
-
-  /** 逾期几天（用来在卡片上写「逾期 3 天」） */
-  private overdueDays(t: Task): number {
-    if (!this.isOverdue(t)) { return 0; }
-    const days: number = -D.diffDays(D.parse((t.due_date as string).slice(0, 10)), new Date());
-    return days > 0 ? days : 0;
-  }
+  /**
+   * v5.15：逾期判定搬去 Store 里唯一一份（`isOverdue` / `overdueDays`）。
+   * 以前这一页和首页各写一遍自己的判法 —— 同一件事两个页面可能一个标红一个不标红。
+   * 口径没变：没完成 + 填了到期日 + 到期日早于今天（按日历日比，不看时刻）。
+   */
 
   // ── 状态流转（v2.8）────────────────────────────────────────
   /** 圈圈点击：待办 → 进行中 → 完成 → 待办（工作台是完成↔待办，这里多一档进行中） */
@@ -258,10 +253,15 @@ export struct TasksView {
 
   private applyStatus(id: number, status: TaskStatus, title: string): void {
     const label: string = status === 'done' ? '完成了' : (status === 'doing' ? '开始做了' : '退回待办了');
-    Store.I.setTaskStatus(id, status).catch(() => {
-      toast(this.getUIContext(), '状态没改成，再试一次');
+    // v5.14：Store.setTaskStatus 现在返回 boolean（失败会回滚），
+    //   提示要等写库结果出来再给 —— 写失败了还弹「完成了」就是骗人。
+    Store.I.setTaskStatus(id, status).then((ok: boolean) => {
+      if (ok) {
+        toast(this.getUIContext(), `「${title}」${label}`);
+      } else {
+        toast(this.getUIContext(), '状态没改成，再试一次');
+      }
     });
-    toast(this.getUIContext(), `「${title}」${label}`);
   }
 
   private findTaskLocal(id: number): Task | null {
@@ -415,7 +415,7 @@ export struct TasksView {
 
   private last7Label(i: number): string {
     const d = D.dateAdd(new Date(), -(6 - i));
-    return `${D.slashMd(d)} 周${D.weekdayOf(D.key(d))}`;
+    return D.mdWeek(D.key(d));
   }
 
   private last7Max(): number {
@@ -450,85 +450,187 @@ export struct TasksView {
 
   // ── 组件 ──
   @Builder tstat(cls: string, dot: string, label: string, status: string, warn: boolean) {
-    Row({ space: 9 }) {
+    Row({  space: S.spaceXl  }) {
       Row() {
-        Row().width(8).height(8).borderRadius(4).backgroundColor(dot)
+        Row().width(8).height(8).borderRadius(S.radiusXs).backgroundColor(dot)
       }
       .width(28)
       .height(28)
-      .borderRadius(9)
+      .borderRadius(S.radiusSm)
       .backgroundColor(cls)
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
 
-      Column({ space: 1 }) {
-        Text(label).fontSize(S.tinySize).fontColor(tc(this.dark, '#8FA2B3', 1))
-        Row({ space: 2 }) {
+      Column({  space: S.spaceXs  }) {
+        Text(label).fontSize(S.tinySize).fontColor(tc(this.pal, '#8FA2B3', 1))
+        Row({  space: S.spaceXs  }) {
           Text(status === 'todo' ? `${this.gTodo}` : (status === 'doing' ? `${this.gDoing}` : (status === 'done' ? `${this.gDone}` : `${this.cOverdue}`)))
-            .fontSize(14)
+            .fontSize(S.cardTitleSize)
             .fontWeight(FontWeight.Medium)
-            .fontColor(warn && this.cOverdue > 0 ? tc(this.dark, '#C25E4A', 1) : tc(this.dark, '#2B4055', 1))
-          Text('件').fontSize(9).fontColor(tk(this.dark, 'textHint')).margin({ bottom: 1 })
+            .fontColor(warn && this.cOverdue > 0 ? tc(this.pal, '#C25E4A', 1) : tc(this.pal, '#2B4055', 1))
+          Text('件').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint')).margin({  bottom: S.spaceXs  })
         }
         .alignItems(VerticalAlign.Bottom)
       }
       .alignItems(HorizontalAlign.Start)
     }
     .layoutWeight(1)
-    .padding({ left: 12, right: 10, top: 8, bottom: 8 })
+    .padding({  left: S.space2Xl, right: S.spaceXl, top: S.spaceLg, bottom: S.spaceLg  })
     .borderRadius(S.radiusInner)
-    .backgroundColor(tk(this.dark, 'card'))
-    .border({ width: 1, color: tk(this.dark, 'cardBorder') })
+    .backgroundColor(tk(this.pal, 'card'))
+    .border({ width: 1, color: tk(this.pal, 'cardBorder') })
     .alignItems(VerticalAlign.Center)
   }
 
+  /** v5.16：时间筛选项的中文名 */
+  private dueLabel(d: string): string {
+    switch (d) {
+      case 'today': return '今天';
+      case 'week': return '本周';
+      case 'overdue': return '逾期';
+      case 'forever': return '长期';
+      default: return '不限时间';
+    }
+  }
+
+  /** v5.16：有没有在筛 */
+  private hasFilter(): boolean {
+    return this.area !== 'all' || this.due !== 'all';
+  }
+
+  /**
+   * v5.16：统计胶囊（原来四张大卡，手机上 2×2 占了半屏，看板被挤到下面）
+   * 现在一行四个小胶囊：圆点 + 标签 + 数字。
+   */
+  @Builder statPill(label: string, count: number, dot: string, warn: boolean) {
+    Row({  space: S.spaceSm  }) {
+      Row().width(6).height(6).borderRadius(S.radiusDot).backgroundColor(dot)
+      Text(label).fontSize(S.tinySize).fontColor(tk(this.pal, 'textSub')).maxLines(1)
+      Text(`${count}`).fontSize(S.labelSize).fontWeight(FontWeight.Medium)
+        .fontColor(warn && count > 0 ? tc(this.pal, '#C25E4A', 1) : tk(this.pal, 'text'))
+    }
+    .layoutWeight(1)
+    .justifyContent(FlexAlign.Center)
+    .padding({  left: S.spaceSm, right: S.spaceSm, top: S.spaceMd, bottom: S.spaceMd  })
+    .borderRadius(S.radiusPill)
+    .backgroundColor(tk(this.pal, 'soft'))
+    .alignItems(VerticalAlign.Center)
+  }
+
+  /** v5.16：筛选面板内容（底部抽屉） */
+  @Builder filterSheet() {
+    Column({  space: S.spaceXl  }) {
+      Row() {
+        Text('筛选').fontSize(S.cardTitleSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text'))
+        Blank()
+        Text('重置')
+          .fontSize(S.tinySize)
+          .fontColor(tk(this.pal, 'textSub'))
+          .padding({  left: S.spaceLg, right: S.spaceLg, top: S.spaceMd, bottom: S.spaceMd  })
+          .onClick(() => { this.area = 'all'; this.due = 'all'; this.recount(); })
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      Column({  space: S.spaceMd  }) {
+        Text('领域').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
+        Flex({ wrap: FlexWrap.Wrap }) {
+          Chip({ text: '全部', active: this.area === 'all', onTap: () => { this.area = 'all'; this.recount(); } })
+          ForEach(['work', 'side', 'media', 'study', 'life'], (a: string) => {
+            Chip({ text: areaLabel(a), active: this.area === a, onTap: () => { this.area = a; this.recount(); } })
+          }, (a: string) => `ff-${a}`)
+        }
+        .width('100%')
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+
+      Column({  space: S.spaceMd  }) {
+        Text('时间').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
+        Flex({ wrap: FlexWrap.Wrap }) {
+          Chip({ text: '不限时间', active: this.due === 'all', onTap: () => { this.due = 'all'; this.recount(); } })
+          Chip({ text: '今天', active: this.due === 'today', onTap: () => { this.due = this.due === 'today' ? 'all' : 'today'; this.recount(); } })
+          Chip({ text: '本周', active: this.due === 'week', onTap: () => { this.due = this.due === 'week' ? 'all' : 'week'; this.recount(); } })
+          Chip({ text: '逾期', active: this.due === 'overdue', onTap: () => { this.due = this.due === 'overdue' ? 'all' : 'overdue'; this.recount(); } })
+          Chip({ text: '长期', active: this.due === 'forever', onTap: () => { this.due = this.due === 'forever' ? 'all' : 'forever'; this.recount(); } })
+        }
+        .width('100%')
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+
+      Row() {
+        Text('完成')
+          .fontSize(S.labelSize)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.White)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+      }
+      .height(42)
+      .borderRadius(S.radiusBtn)
+      .linearGradient(brandGradient(this.pal))
+      .justifyContent(FlexAlign.Center)
+      .alignItems(VerticalAlign.Center)
+      .onClick(() => { this.showFilter = false; })
+    }
+    .width('100%')
+    .padding({  left: S.space3Xl, right: S.space3Xl, top: S.space3Xl, bottom: S.space4Xl  })
+    .backgroundColor(tk(this.pal, 'card'))
+    .borderRadius({  topLeft: S.radiusSheet, topRight: S.radiusSheet  })
+    .alignItems(HorizontalAlign.Start)
+  }
+
   @Builder boardCard(t: Task) {
-    Column({ space: 6 }) {
+    Column({  space: S.spaceMd  }) {
       Text(t.title)
         .fontSize(S.bodySize)
-        .fontColor(t.status === 'done' ? tc(this.dark, '#A3B3C1', 1) : tc(this.dark, '#2C4257', 1))
+        .fontColor(t.status === 'done' ? tc(this.pal, '#A3B3C1', 1) : tc(this.pal, '#2C4257', 1))
         .decoration({ type: t.status === 'done' ? TextDecorationType.LineThrough : TextDecorationType.None, color: '#A3B3C1' })
         .maxLines(3)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
-        .padding({ right: 18 })
+        .padding({  right: S.space5Xl  })
 
-      Row({ space: 6 }) {
-        Text(this.hasDue(t) ? D.slashMd(D.parse((t.due_date as string).slice(0, 10))) : '长期')
+      Row({  space: S.spaceMd  }) {
+        Text(this.hasDue(t) ? D.md(t.due_date) : '长期')
           .fontSize(S.microSize)
-          .fontColor(this.isOverdue(t) ? tc(this.dark, '#D2795C', 1) : tk(this.dark, 'textHint'))
+          .fontColor(isOverdue(t) ? tc(this.pal, '#D2795C', 1) : tk(this.pal, 'textHint'))
         // v4.4：光把日期变红，看不出「逾期」这个状态 —— 加个明说的红标
-        if (this.overdueDays(t) > 0) {
-          Text(`逾期 ${this.overdueDays(t)} 天`)
-            .fontSize(8)
-            .fontColor(onFill(this.dark))
-            .padding({ left: 4, right: 4, top: 1, bottom: 1 })
-            .borderRadius(4)
-            .backgroundColor(tc(this.dark, '#E08A6F', 0))
+        if (overdueDays(t) > 0) {
+          Text(`逾期 ${overdueDays(t)} 天`)
+            .fontSize(S.microSize)
+            .fontColor(onFill(this.pal))
+            .padding({  left: S.spaceSm, right: S.spaceSm, top: S.spaceXs, bottom: S.spaceXs  })
+            .borderRadius(S.radiusXs)
+            .backgroundColor(tc(this.pal, '#A83440', 0))
         }
         Text(areaLabel(t.area))
-          .fontSize(8)
-          .fontColor(tc(this.dark, '#8FA2B3', 1))
-          .padding({ left: 5, right: 5, top: 0, bottom: 0 })
-          .borderRadius(5)
-          .border({ width: 1, color: tc(this.dark, tc(this.dark, '#EAF2F9', 2), 2) })
+          .fontSize(S.microSize)
+          .fontColor(tc(this.pal, '#8FA2B3', 1))
+          .padding({  left: S.spaceMd, right: S.spaceMd, top: 0, bottom: 0  })
+          .borderRadius(S.radiusXs)
+          .border({ width: 1, color: tc(this.pal, tc(this.pal, '#EAF2F9', 2), 2) })
         if (t.priority === 'high') {
-          Text('· 要紧').fontSize(S.microSize).fontColor(tc(this.dark, '#D2795C', 1))
+          Text('· 要紧').fontSize(S.microSize).fontColor(tc(this.pal, '#D2795C', 1))
         }
         if (t.estimate_min !== null && t.estimate_min > 0) {
-          Text(`${t.estimate_min}m`).fontSize(S.microSize).fontColor(tk(this.dark, 'textHint'))
+          Text(`${t.estimate_min}m`).fontSize(S.microSize).fontColor(tk(this.pal, 'textHint'))
         }
       }
       .width('100%')
     }
     .width('100%')
-    .padding({ left: 11, right: 11, top: 10, bottom: 10 })
+    .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
     .borderRadius(S.radiusInner)
-    .backgroundColor(tk(this.dark, 'card'))
-    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#EBF3FA', 2), 2) })
-    .margin({ top: 7 })
+    .backgroundColor(tk(this.pal, 'card'))
+    .border({ width: 1, color: tc(this.pal, tc(this.pal, '#EBF3FA', 2), 2) })
+    .margin({  top: S.spaceLg  })
     // 拖起来的卡片淡出（工作台 .tcard.lifted）
     .opacity(this.dragId === t.id ? 0.35 : 1)
+    // v5.0：按压回弹
+    .stateStyles({ pressed: { .scale({ x: 0.97, y: 0.97 }) } })
+    .animation({ duration: 120, curve: Curve.EaseOut })
     // v4.2：手指抬起来的时候收尾。Sequence 手势里「只长按没拖」不会有 pan 的 onActionEnd，
     // 遮罩层会一直挡着页面 —— 这里用 onTouch 的 Up 兜住。
     .onTouch((event: TouchEvent) => {
@@ -579,15 +681,15 @@ export struct TasksView {
 
   @Builder col(status: string, label: string, dot: string) {
     Column() {
-      Row({ space: 7 }) {
-        Row().width(6).height(6).borderRadius(3).backgroundColor(dot)
-        Text(label).fontSize(11).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#6A7F92', 1))
+      Row({  space: S.spaceLg  }) {
+        Row().width(6).height(6).borderRadius(S.radiusDot).backgroundColor(dot)
+        Text(label).fontSize(S.labelSize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#6A7F92', 1))
         Blank()
         Text(status === 'todo' ? `${this.cTodo}` : (status === 'doing' ? `${this.cDoing}` : `${this.cDone}`))
-          .fontSize(9).fontColor(tk(this.dark, 'textHint'))
+          .fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
       }
       .width('100%')
-      .padding({ left: 5, right: 5, top: 2, bottom: 8 })
+      .padding({  left: S.spaceMd, right: S.spaceMd, top: S.spaceXs, bottom: S.spaceLg  })
       .alignItems(VerticalAlign.Center)
 
       ForEach(this.byStatus(status), (t: Task) => {
@@ -598,23 +700,23 @@ export struct TasksView {
         // v4.4：每列空态说清楚「这一列是干嘛的」，跟网页版口径一致
         Text(status === 'todo' ? '把想到的事记到这里' : (status === 'doing' ? '正在做的，拖到这里' : '做完的，会落在这里'))
           .fontSize(S.tinySize)
-          .fontColor(tk(this.dark, 'textPale'))
+          .fontColor(tk(this.pal, 'textPale'))
           .width('100%')
           .textAlign(TextAlign.Center)
-          .padding({ top: 22, bottom: 22 })
+          .padding({  top: 22, bottom: 22  })
       }
 
-      Row({ space: 4 }) {
-        SymbolGlyph(sym('plus')).fontSize(14).fontColor([tc(this.dark, '#A8B8C6', 1)])
-        Text(`添加${label}任务`).fontSize(S.tinySize).fontColor(tk(this.dark, 'textHint'))
+      Row({  space: S.spaceSm  }) {
+        SymbolGlyph(sym('plus')).fontSize(S.cardTitleSize).fontColor([tc(this.pal, '#A8B8C6', 1)])
+        Text(`添加${label}任务`).fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
       }
       .width('100%')
-      .padding({ top: 10, bottom: 10 })
+      .padding({  top: S.spaceXl, bottom: S.spaceXl  })
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
-      .borderRadius(12)
-      .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
-      .margin({ top: 8 })
+      .borderRadius(S.radiusInner)
+      .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
+      .margin({  top: S.spaceLg  })
       .onClick(() => {
         this.editingId = -1;
         this.addStatus = status;
@@ -622,11 +724,11 @@ export struct TasksView {
       })
     }
     .width('100%')
-    .padding({ left: 10, right: 10, top: 2, bottom: 12 })
-    .borderRadius(18)
-    .backgroundColor(tc(this.dark, '#FDFEFF', 0))
-    .border({ width: 1, color: tk(this.dark, 'cardBorder') })
-    .margin({ top: 10 })
+    .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceXs, bottom: S.space2Xl  })
+    .borderRadius(S.radiusCard)
+    .backgroundColor(tc(this.pal, '#FDFEFF', 0))
+    .border({ width: 1, color: tk(this.pal, 'cardBorder') })
+    .margin({  top: S.spaceXl  })
   }
 
   /** v4.8：宽屏看板的一列 —— 外层占 1/3，内层沿用竖排版式 */
@@ -648,44 +750,44 @@ export struct TasksView {
         .backgroundColor('rgba(16,38,58,0.55)')
         .onClick(() => { this.endDrag(); })
 
-      Column({ space: 10 }) {
+      Column({  space: S.spaceXl  }) {
         Text('把它放到…')
-          .fontSize(11)
-          .fontColor(tc(this.dark, '#D3E3EF', 1))
-        Row({ space: 10 }) {
-          this.dropBtn('todo', '待办', '#1A6499')
-          this.dropBtn('doing', '进行中', '#8A5A0F')
-          this.dropBtn('done', '完成', '#12706B')
+          .fontSize(S.labelSize)
+          .fontColor(tc(this.pal, '#D3E3EF', 1))
+        Row({  space: S.spaceXl  }) {
+          this.dropBtn('todo', '待办', tk(this.pal, 'todo'))
+          this.dropBtn('doing', '进行中', tk(this.pal, 'doing'))
+          this.dropBtn('done', '完成', tk(this.pal, 'brand'))
         }
         .width('100%')
       }
       .width('100%')
       .height('100%')
-      .padding({ left: 20, right: 20 })
+      .padding({  left: S.space6Xl, right: S.space6Xl  })
       .justifyContent(FlexAlign.End)
       .alignItems(HorizontalAlign.Center)
-      .margin({ bottom: 96 })
+      .margin({  bottom: 96  })
 
       // v4.2：被按住的那张卡片浮起来，跟手指走
-      Column({ space: 3 }) {
+      Column({  space: S.spaceSm  }) {
         Text(this.dragTitle)
-          .fontSize(12.5)
+          .fontSize(S.bodySize)
           .fontWeight(FontWeight.Medium)
-          .fontColor(tc(this.dark, '#2C4257', 1))
+          .fontColor(tc(this.pal, '#2C4257', 1))
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
         Text(this.dragTarget.length > 0 ? `松手放到「${this.targetLabel(this.dragTarget)}」` : '拖到下面选一个状态')
-          .fontSize(9)
-          .fontColor(tc(this.dark, '#8FA2B3', 1))
+          .fontSize(S.tinySize)
+          .fontColor(tc(this.pal, '#8FA2B3', 1))
           .width('100%')
       }
       .width(200)
-      .padding({ left: 13, right: 13, top: 9, bottom: 9 })
-      .borderRadius(13)
-      .backgroundColor(tc(this.dark, '#FFFFFF', 0))
-      .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2) })
-      .shadow({ radius: 24, color: 'rgba(16,38,58,0.32)', offsetX: 0, offsetY: 12 })
+      .padding({  left: S.space3Xl, right: S.space3Xl, top: S.spaceXl, bottom: S.spaceXl  })
+      .borderRadius(S.radiusInner)
+      .backgroundColor(tc(this.pal, '#FFFFFF', 0))
+      .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E6F0F8', 2), 2) })
+      .shadow(cardShadow(this.pal))
       .position({ x: this.dragX - 100, y: this.dragY - 74 })
       .hitTestBehavior(HitTestMode.Transparent)
     }
@@ -700,18 +802,18 @@ export struct TasksView {
   }
 
   @Builder dropBtn(status: string, label: string, color: string) {
-    Column({ space: 3 }) {
+    Column({  space: S.spaceSm  }) {
       Text(label)
-        .fontSize(12.5)
+        .fontSize(S.bodySize)
         .fontWeight(FontWeight.Medium)
-        .fontColor(this.dragTarget === status ? onFill(this.dark) : tc(this.dark, '#E7F0F7', 1))
+        .fontColor(this.dragTarget === status ? onFill(this.pal) : tc(this.pal, '#E7F0F7', 1))
       Text(this.statusHint(status))
-        .fontSize(8.5)
-        .fontColor(this.dragTarget === status ? onFill(this.dark) : tc(this.dark, '#A9C0D2', 1))
+        .fontSize(S.microSize)
+        .fontColor(this.dragTarget === status ? onFill(this.pal) : tc(this.pal, '#A9C0D2', 1))
     }
     .layoutWeight(1)
     .height(58)
-    .borderRadius(14)
+    .borderRadius(S.radiusInner)
     .backgroundColor(this.dragTarget === status ? color : 'rgba(255,255,255,0.14)')
     .border({
       width: 1.5,
@@ -774,253 +876,255 @@ export struct TasksView {
 
       Stack({ alignContent: Alignment.TopStart }) {
         Scroll() {
-            Column({ space: 0 }) {
-            Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+            Column({  space: 0  }) {
+            Text(`${this.tick}`).fontSize(S.hiddenSize).width(1).height(1).opacity(0)
 
             this.pageTop()
 
             // page-head
-            Column({ space: 5 }) {
-              Text('TASKS · 任务面板').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
+            Column({  space: S.spaceMd  }) {
+              Text('TASKS · 任务面板').fontSize(S.tinySize).fontColor(tc(this.pal, '#9DB0C1', 1)).letterSpacing(1.6)
               Text('所有事，都在这里。')
-                .fontSize(23)
+                .fontSize(S.sectionSize)
                 .fontWeight(FontWeight.Bold)
-                .fontColor(tk(this.dark, 'text'))
-                .letterSpacing(-0.5)
-              Row({ space: 0 }) {
+                .fontColor(tk(this.pal, 'text'))
+                .letterSpacing(-0.2)
+              Row({  space: 0  }) {
                 Text(`${this.cOpen} 件待处理 · 共 ${this.cTotal} 件`)
-                  .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+                  .fontSize(S.labelSize).fontColor(tk(this.pal, 'textSub'))
                 if (this.cOverdue > 0) {
                   Text(` · ${this.cOverdue} 件已逾期`)
-                    .fontSize(11).fontColor(tc(this.dark, '#D2795C', 1))
+                    .fontSize(S.labelSize).fontColor(tc(this.pal, '#D2795C', 1))
                 }
                 if (this.cForever > 0) {
                   Text(` · ${this.cForever} 件长期`)
-                    .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+                    .fontSize(S.labelSize).fontColor(tk(this.pal, 'textSub'))
                 }
-                Text(' · 按住卡片拖到别的列，就能改状态')
-                  .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+                Text(' · 长按卡片拖到别的列')
+                  .fontSize(S.labelSize).fontColor(tk(this.pal, 'textSub'))
               }
               .width('100%')
               .flexShrink(0)
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
-            .padding({ top: 14, bottom: 14 })
+            .padding({  top: S.spaceXl, bottom: S.spaceXl  })
 
-            // v4.8：宽屏一行四个（网页版 .tstats{repeat(4,1fr)}），窄屏仍 2×2
-            if (this.layoutMode >= 1) {
-              Row({ space: 10 }) {
-                this.tstat('#E8F2FC', '#1A6499', '待在待办', 'todo', false)
-                this.tstat('#FDF4DC', '#8A5A0F', '正在做', 'doing', false)
-                this.tstat('#E3F8F2', '#0F6E58', '已完成', 'done', false)
-                this.tstat('#FBEDE9', '#A64B2E', '已逾期', 'overdue', true)
-              }.width('100%')
-            } else {
-              Row({ space: 10 }) {
-                this.tstat('#E8F2FC', '#1A6499', '待在待办', 'todo', false)
-                this.tstat('#FDF4DC', '#8A5A0F', '正在做', 'doing', false)
-              }.width('100%')
-              Row({ space: 10 }) {
-                this.tstat('#E3F8F2', '#0F6E58', '已完成', 'done', false)
-                this.tstat('#FBEDE9', '#A64B2E', '已逾期', 'overdue', true)
-              }.width('100%').margin({ top: 10 })
-            }
-
-            // filters
-            Flex({ wrap: FlexWrap.Wrap }) {
-              Chip({ text: '全部', active: this.area === 'all', onTap: () => { this.area = 'all'; this.recount(); } })
-              ForEach(['work', 'side', 'media', 'study', 'life'], (a: string) => {
-                Chip({ text: areaLabel(a), active: this.area === a, onTap: () => { this.area = a; this.recount(); } })
-              }, (a: string) => `f-${a}`)
+            // v5.16：四张统计大卡（手机 2×2）收成一行四个小胶囊 ——
+            //   以前光统计卡就占掉半屏，看板要往下滚很久才看得到。
+            Row({  space: S.spaceSm  }) {
+              this.statPill('待办', this.gTodo, tk(this.pal, 'todo'), false)
+              this.statPill('进行中', this.gDoing, tk(this.pal, 'doing'), false)
+              this.statPill('完成', this.gDone, tk(this.pal, 'done'), false)
+              this.statPill('逾期', this.cOverdue, tk(this.pal, 'danger'), true)
             }
             .width('100%')
-            .margin({ top: 12 })
+            .margin({  top: S.spaceXl  })
 
-            Flex({ wrap: FlexWrap.Wrap }) {
-              Chip({ text: '今天', active: this.due === 'today', onTap: () => { this.due = this.due === 'today' ? 'all' : 'today'; this.recount(); } })
-              Chip({ text: '本周', active: this.due === 'week', onTap: () => { this.due = this.due === 'week' ? 'all' : 'week'; this.recount(); } })
-              Chip({ text: '逾期', active: this.due === 'overdue', onTap: () => { this.due = this.due === 'overdue' ? 'all' : 'overdue'; this.recount(); } })
-              Chip({ text: '长期', active: this.due === 'forever', onTap: () => { this.due = this.due === 'forever' ? 'all' : 'forever'; this.recount(); } })
+            // v5.16：十个筛选 chip（领域 6 + 时间 4）收成「一行摘要 + 弹层」——
+            //   chip 太多会把看板挤到屏幕外；现在只看得到当前选了什么，要改点「筛选」。
+            Row({  space: S.spaceMd  }) {
+              Chip({
+                text: this.area === 'all' ? '全部领域' : areaLabel(this.area),
+                active: this.area !== 'all',
+                onTap: () => { this.showFilter = true; }
+              })
+              Chip({
+                text: this.due === 'all' ? '不限时间' : this.dueLabel(this.due),
+                active: this.due !== 'all',
+                onTap: () => { this.showFilter = true; }
+              })
+              if (this.hasFilter()) {
+                Text('清空筛选')
+                  .fontSize(S.tinySize)
+                  .fontColor(tk(this.pal, 'textSub'))
+                  .padding({  left: S.spaceMd, right: S.spaceMd, top: S.spaceMd, bottom: S.spaceMd  })
+                  .onClick(() => { this.area = 'all'; this.due = 'all'; this.recount(); })
+              }
+              Blank()
+              Text('筛选 ›').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
+                .onClick(() => { this.showFilter = true; })
             }
             .width('100%')
-            .margin({ top: 6 })
+            .margin({  top: S.spaceLg  })
+            .alignItems(VerticalAlign.Center)
 
             // v4.8：宽屏三列并排（网页版 .kanban{repeat(3,1fr)}），窄屏仍竖排
             if (this.layoutMode >= 2) {
-              Row({ space: 10 }) {
-                this.colBox('todo', '待办', '#1A6499')
-                this.colBox('doing', '进行中', '#8A5A0F')
-                this.colBox('done', '完成', '#12706B')
+              Row({  space: S.spaceXl  }) {
+                this.colBox('todo', '待办', tk(this.pal, 'todo'))
+                this.colBox('doing', '进行中', tk(this.pal, 'doing'))
+                this.colBox('done', '完成', tk(this.pal, 'brand'))
               }
               .width('100%')
               .alignItems(VerticalAlign.Top)
-              .margin({ top: 6 })
+              .margin({  top: S.spaceMd  })
             } else {
               Column() {
-                this.col('todo', '待办', '#1A6499')
-                this.col('doing', '进行中', '#8A5A0F')
-                this.col('done', '完成', '#12706B')
+                this.col('todo', '待办', tk(this.pal, 'todo'))
+                this.col('doing', '进行中', tk(this.pal, 'doing'))
+                this.col('done', '完成', tk(this.pal, 'brand'))
               }
               .width('100%')
-              .margin({ top: 6 })
+              .margin({  top: S.spaceMd  })
             }
 
             // tasks-extra
             Column() {
               Card({ title: '最近七天收尾节奏', sub: '每天完成的任务数' }) {
-                Column({ space: 2 }) {
+                Column({  space: S.spaceXs  }) {
                   if (this.last7Max() === 0) {
                     // 近七天一件都没收尾：不画七条空槽，直接给一句空态，省得看着像「全是满格」
-                    Column({ space: 6 }) {
+                    Column({  space: S.spaceMd  }) {
                       Text('最近七天还没有收尾的任务')
-                        .fontSize(11)
-                        .fontColor(tk(this.dark, 'textSub'))
+                        .fontSize(S.labelSize)
+                        .fontColor(tk(this.pal, 'textSub'))
                       Text('挑一件 10 分钟能做完的，先划掉它')
-                        .fontSize(10)
-                        .fontColor(tk(this.dark, 'textPale'))
+                        .fontSize(S.subSize)
+                        .fontColor(tk(this.pal, 'textPale'))
                     }
                     .width('100%')
-                    .padding({ top: 22, bottom: 22 })
+                    .padding({  top: 22, bottom: 22  })
                     .justifyContent(FlexAlign.Center)
-                    .borderRadius(12)
-                    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
+                    .borderRadius(S.radiusInner)
+                    .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
                   } else {
                     ForEach(this.last7(), (n: number, i: number) => {
-                      Row({ space: 10 }) {
+                      Row({  space: S.spaceXl  }) {
                         Text(this.last7Label(i))
                           .fontSize(S.tinySize)
-                          .fontColor(i === 6 ? tc(this.dark, '#2FA9A3', 1) : tc(this.dark, '#93A6B6', 1))
+                          .fontColor(i === 6 ? tc(this.pal, '#2FA9A3', 1) : tc(this.pal, '#93A6B6', 1))
                           .width(64)
                           .flexShrink(0)
                         Row() {
                           Row()
                             .height('100%')
                             .width(`${Math.max(n === 0 ? 0 : 8, Math.round(n / this.last7Max() * 100))}%`)
-                            .borderRadius(99)
-                            .linearGradient(i === 6
-                              ? { angle: 90, colors: [['#1C7C74', 0], ['#12706B', 1]] }
-                              : { angle: 90, colors: [['#2E8E84', 0], ['#12706B', 1]] })
+                            .borderRadius(S.radiusPill)
+                            .linearGradient({ angle: 90, colors: [[tk(this.pal, 'gradFrom'), 0], [tk(this.pal, 'brand'), 1]] })
                         }
                         .layoutWeight(1)
                         .height(11)
-                        .borderRadius(99)
-                        .backgroundColor(tc(this.dark, '#EFF7FB', 0))
+                        .borderRadius(S.radiusPill)
+                        .backgroundColor(tc(this.pal, '#EFF7FB', 0))
                         .alignItems(VerticalAlign.Center)
                         Text(n === 0 ? '—' : `${n} 件`)
-                          .fontSize(10)
-                          .fontColor(n === 0 ? tc(this.dark, '#C8D8E4', 1) : tc(this.dark, '#5E7183', 1))
+                          .fontSize(S.subSize)
+                          .fontColor(n === 0 ? tc(this.pal, '#C8D8E4', 1) : tc(this.pal, '#5E7183', 1))
                           .width(34)
                           .textAlign(TextAlign.End)
                           .flexShrink(0)
                       }
                       .width('100%')
-                      .padding({ left: 8, right: 6, top: 6, bottom: 6 })
+                      .padding({  left: S.spaceLg, right: S.spaceMd, top: S.spaceMd, bottom: S.spaceMd  })
                       .alignItems(VerticalAlign.Center)
                     }, (n: number, i: number) => `l7-${i}-${n}`)
                   }
 
-                  Divider().color('#EDF4FA').strokeWidth(1).margin({ top: 6 })
-                  Row({ space: 5 }) {
-                    Text('这周完成').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                    Text(`${this.cWeekDone}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
-                    Text('件 · 近七天平均每天').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                    Text(`${this.cLast7Avg.toFixed(1)}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
-                    Text('件').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                  Divider().color('#EDF4FA').strokeWidth(1).margin({  top: S.spaceMd  })
+                  Row({  space: S.spaceMd  }) {
+                    Text('这周完成').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
+                    Text(`${this.cWeekDone}`).fontSize(S.labelSize).fontColor(tc(this.pal, '#2B4055', 1)).fontWeight(FontWeight.Medium)
+                    Text('件 · 近七天平均每天').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
+                    Text(`${this.cLast7Avg.toFixed(1)}`).fontSize(S.labelSize).fontColor(tc(this.pal, '#2B4055', 1)).fontWeight(FontWeight.Medium)
+                    Text('件').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
                     Blank()
                   }
                   .width('100%')
-                  .margin({ top: 8 })
+                  .margin({  top: S.spaceLg  })
                   .alignItems(VerticalAlign.Center)
                 }
                 .width('100%')
               }
             }
             .width('100%')
-            .margin({ top: 16 })
+            .margin({  top: S.space4Xl  })
 
             Column() {
               Card({ title: '刚刚做完的', sub: '最近完成' }) {
-                Column({ space: 7 }) {
+                Column({  space: S.spaceLg  }) {
                   if (this.recentDone().length === 0) {
                     Text('还没有完成的任务，先挑一件小的开始')
-                      .fontSize(10)
-                      .fontColor(tk(this.dark, 'textPale'))
+                      .fontSize(S.subSize)
+                      .fontColor(tk(this.pal, 'textPale'))
                       .width('100%')
                       .textAlign(TextAlign.Center)
-                      .padding({ top: 30, bottom: 30 })
-                      .borderRadius(12)
-                      .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
+                      .padding({  top: 30, bottom: 30  })
+                      .borderRadius(S.radiusInner)
+                      .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
                   } else {
                     ForEach(this.recentDone(), (t: Task) => {
-                      Row({ space: 9 }) {
+                      Row({  space: S.spaceXl  }) {
                         Row() {
                           // v4.23：fs14 的勾盒子 14x14vp，圆放大到 18vp 才装得下
-                          SymbolGlyph(sym('check')).fontSize(14).fontColor([onFill(this.dark)])
+                          SymbolGlyph(sym('check')).fontSize(S.cardTitleSize).fontColor([onFill(this.pal)])
                         }
                         .width(18)
                         .height(18)
-                        .borderRadius(9)
-                        .backgroundColor(tk(this.dark, 'brand'))
+                        .borderRadius(S.radiusSm)
+                        .backgroundColor(tk(this.pal, 'brand'))
                         .justifyContent(FlexAlign.Center)
                         .alignItems(VerticalAlign.Center)
                         Text(t.title)
-                          .fontSize(11.5)
+                          .fontSize(S.labelSize)
                           .fontWeight(FontWeight.Medium)
-                          .fontColor(tc(this.dark, '#2C4257', 1))
+                          .fontColor(tc(this.pal, '#2C4257', 1))
                           .maxLines(1)
                           .textOverflow({ overflow: TextOverflow.Ellipsis })
                           .layoutWeight(1)
-                        Text(t.done_at !== null ? `${D.slashMd(D.parse(t.done_at))} ${D.hm(t.done_at)}` : '')
-                          .fontSize(9)
-                          .fontColor(tk(this.dark, 'textHint'))
+                        Text(t.done_at !== null ? `${D.md(t.done_at)} ${D.hm(t.done_at)}` : '')
+                          .fontSize(S.tinySize)
+                          .fontColor(tk(this.pal, 'textHint'))
                           .flexShrink(0)
                       }
                       .width('100%')
-                      .padding({ left: 11, right: 11, top: 8, bottom: 8 })
-                      .borderRadius(11)
-                      .backgroundColor(tc(this.dark, '#F8FCFF', 0))
-                      .border({ width: 1, color: tc(this.dark, tc(this.dark, '#EEF6FB', 2), 2) })
+                      .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceLg, bottom: S.spaceLg  })
+                      .borderRadius(S.radiusBtn)
+                      .backgroundColor(tc(this.pal, '#F8FCFF', 0))
+                      .border({ width: 1, color: tc(this.pal, tc(this.pal, '#EEF6FB', 2), 2) })
                       .alignItems(VerticalAlign.Center)
                     }, (t: Task) => `rd-${t.id}-${this.tick}`)
                   }
 
                   if (this.recentDone().length < 3) {
-                    Column({ space: 3 }) {
-                      Text('节奏是靠小事带起来的').fontSize(10).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#9FB2C2', 1))
-                      Text('挑一件 10 分钟能收尾的，先划掉它').fontSize(S.tinySize).fontColor(tk(this.dark, 'textPale'))
+                    Column({  space: S.spaceSm  }) {
+                      Text('节奏是靠小事带起来的').fontSize(S.subSize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#9FB2C2', 1))
+                      Text('挑一件 10 分钟能收尾的，先划掉它').fontSize(S.tinySize).fontColor(tk(this.pal, 'textPale'))
                     }
                     .width('100%')
-                    .padding({ top: 14, bottom: 14 })
-                    .borderRadius(12)
-                    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
+                    .padding({  top: S.space3Xl, bottom: S.space3Xl  })
+                    .borderRadius(S.radiusInner)
+                    .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E6F0F8', 2), 2), style: BorderStyle.Dashed })
                     .alignItems(HorizontalAlign.Center)
                   }
 
-                  Divider().color('#EDF4FA').strokeWidth(1).margin({ top: 4 })
-                  Row({ space: 5 }) {
-                    Text('累计完成').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                  Divider().color('#EDF4FA').strokeWidth(1).margin({  top: S.spaceSm  })
+                  Row({  space: S.spaceMd  }) {
+                    Text('累计完成').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
                     Text(`${this.cDoneAll}`)
-                      .fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
-                    Text('件 · 还有').fontSize(9).fontColor(tk(this.dark, 'textHint'))
-                    Text(`${this.cOpen}`).fontSize(11).fontColor(tc(this.dark, '#2B4055', 1)).fontWeight(FontWeight.Medium)
-                    Text('件在路上').fontSize(9).fontColor(tk(this.dark, 'textHint'))
+                      .fontSize(S.labelSize).fontColor(tc(this.pal, '#2B4055', 1)).fontWeight(FontWeight.Medium)
+                    Text('件 · 还有').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
+                    Text(`${this.cOpen}`).fontSize(S.labelSize).fontColor(tc(this.pal, '#2B4055', 1)).fontWeight(FontWeight.Medium)
+                    Text('件在路上').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
                     Blank()
                   }
                   .width('100%')
-                  .margin({ top: 8 })
+                  .margin({  top: S.spaceLg  })
                   .alignItems(VerticalAlign.Center)
                 }
                 .width('100%')
               }
             }
             .width('100%')
-            .margin({ top: 14, bottom: S.pageBottom })
+            .margin({  top: S.space3Xl, bottom: R.bottomPad()  })
           }
           .width('100%')
-          .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+          .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop  })
           .alignItems(HorizontalAlign.Start)
         }
+          // v5.16：滚动时把右下角悬浮按钮藏起来（它正好压在内容上），停了就回来
+          .onDidScroll((x: number, y: number) => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+          .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
         .onScrollEdge(onEdgeScrolled)
         .onWillScroll(onEdgeWillScroll)
         .align(Alignment.TopStart)
@@ -1028,7 +1132,8 @@ export struct TasksView {
         .height('100%')
         .scrollBar(BarState.Off)
         .constraintSize({ maxWidth: 1240 })
-        .backgroundColor(tk(this.dark, 'bg'))
+        // v5.0：页面底色改成透明，让 Index 根 Stack 上的大光斑透出来
+      .backgroundColor(Color.Transparent)
         .edgeEffect(EdgeEffect.Spring)
         .bindSheet($$this.showAdd, this.sheetContent(), {
           // v4.6：宽屏时弹层变成「全屏透明 + 居中卡片」，窄屏保持底部抽屉
@@ -1061,6 +1166,15 @@ export struct TasksView {
     }
     .width('100%')
     .height('100%')
+    // v5.16：筛选面板挂在最外层 Stack（新增任务面板挂在 Scroll 上，
+    //   同一个组件只能挂一个 bindSheet，所以筛选另起一个挂点）。
+    .bindSheet($$this.showFilter, this.filterSheet(), {
+      height: SheetSize.FIT_CONTENT,
+      dragBar: !this.wideMode(),
+      showClose: false,
+      backgroundColor: Color.Transparent,
+      width: '100%'
+    })
   }
 
   private last7Sum(): number {

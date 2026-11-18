@@ -443,7 +443,7 @@ export class Repo {
        VALUES (?,?,?,?,?,?,?,?)`,
       [
         name,
-        body.color ?? '#A78BFA',
+        body.color ?? '#66398A',
         body.area ?? 'work',
         'active',
         body.note ?? '',
@@ -668,7 +668,7 @@ export class Repo {
     Db.close(rs);
     const id: number = await Db.insert(
       'INSERT INTO habit (name,color,sort,archived,created_at) VALUES (?,?,?,0,?)',
-      [name, body.color ?? '#3AC8C2', maxSort + 1, nowStr()],
+      [name, body.color ?? '#523593', maxSort + 1, nowStr()],
     'habit');
     const r = await Repo.habits();
     let created: HabitView | null = null;
@@ -833,6 +833,19 @@ export class Repo {
     }
     const r: OkResp = { ok: true };
     return r;
+  }
+
+  // ───────────────────────── 铃铛「已读」 ─────────────────────────
+  // v5.7：提醒清单看过之后红点就不该再亮。做法是记下「哪几条看过了」，
+  //   key 形如 task:12:2026-11-16T09:00（带上时间，改了时间就又算新提醒）。
+  //   只存最近 200 条，够用又不至于把库撑大。
+
+  static async bellSeen(): Promise<string> {
+    return Db.getSetting('bell_seen', '');
+  }
+
+  static async setBellSeen(value: string): Promise<void> {
+    await Db.setSetting('bell_seen', value);
   }
 
   // ───────────────────────── 关联（笔记 ↔ 任务）─────────────────────────
@@ -1144,7 +1157,7 @@ export class Repo {
     let n: number = 0;
     await Db.beginTx();
     try {
-      await Repo.clearAll(true);
+      await Repo.clearAll(true, true);   // 已在外层事务里，不要再开一个
       for (const t of data.tasks) {
         await Repo.insertTaskRow(t);
         n += 1;
@@ -1511,23 +1524,41 @@ export class Repo {
    *  keepProfile = true 时保留「称呼」—— 备份恢复会先清库再灌数据，
    *  如果备份里没带称呼（比如网页端导出的旧文件），保留本机原来的更合理，
    *  不能因为恢复一次就把用户填过的名字抹掉。
+   *
+   *  alreadyInTx = true 时**不要**自己开事务（备份恢复已经开了一个，
+   *  RDB 不支持嵌套事务，再 begin 会直接抛错）。
+   *
+   *  v5.14：**整段包进事务**。
+   *    原来 9 条 DELETE 是一条条跑的 ⇒ 中间任何一条出错（比如磁盘满、库被占用），
+   *    **前面几条已经删了、后面几条还在** ⇒ 用户的数据处于「半清」状态，
+   *    而且界面上还显示「清空成功」。现在要么全删成功，要么整体回滚、一条不动。
    */
-  static async clearAll(keepProfile: boolean = false): Promise<OkResp> {
-    // 标记「这个库已经初始化过了」：清空之后下次冷启动不该把示例数据又铺回来
-    await Db.setSetting('initialized', '1');
-    await Db.exec('DELETE FROM task');
-    await Db.exec('DELETE FROM event');
-    await Db.exec('DELETE FROM note');
-    await Db.exec('DELETE FROM note_task');
-    await Db.exec('DELETE FROM review');
-    await Db.exec('DELETE FROM project');
-    await Db.exec('DELETE FROM habit');
-    await Db.exec('DELETE FROM habit_log');
-    // v4.28：称呼是你填进来的内容，也算「数据」—— 清空全部时一起清掉，
-    // 否则清完首页问候语还挂着旧名字，看着就像没清干净。
-    // 「深色模式」是外观偏好、不是数据，保留；initialized 也要留（不然示例数据会诈尸）。
-    if (!keepProfile) {
-      await Db.exec(`DELETE FROM setting WHERE key = 'user_name'`);
+  static async clearAll(keepProfile: boolean = false, alreadyInTx: boolean = false): Promise<OkResp> {
+    const own: boolean = !alreadyInTx;
+    if (own) { await Db.beginTx(); }
+    try {
+      // 标记「这个库已经初始化过了」：清空之后下次冷启动不该把示例数据又铺回来
+      await Db.setSetting('initialized', '1');
+      await Db.exec('DELETE FROM task');
+      await Db.exec('DELETE FROM event');
+      await Db.exec('DELETE FROM note');
+      await Db.exec('DELETE FROM note_task');
+      await Db.exec('DELETE FROM review');
+      await Db.exec('DELETE FROM project');
+      await Db.exec('DELETE FROM habit');
+      await Db.exec('DELETE FROM habit_log');
+      // v4.28：称呼是你填进来的内容，也算「数据」—— 清空全部时一起清掉，
+      // 否则清完首页问候语还挂着旧名字，看着就像没清干净。
+      // 「深色模式」是外观偏好、不是数据，保留；initialized 也要留（不然示例数据会诈尸）。
+      if (!keepProfile) {
+        await Db.exec(`DELETE FROM setting WHERE key = 'user_name'`);
+      }
+      if (own) { await Db.commitTx(); }
+    } catch (e) {
+      if (own) { await Db.rollbackTx(); }
+      // ArkTS 不允许 throw 任意类型（arkts-limited-throw），先收成 Error 再抛
+      const err: Error = e as Error;
+      throw err;
     }
     const r: OkResp = { ok: true };
     return r;

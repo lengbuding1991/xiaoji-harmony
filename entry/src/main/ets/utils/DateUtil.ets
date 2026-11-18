@@ -157,6 +157,31 @@ export class D {
     return `${d.getMonth() + 1}/${d.getDate()}`;
   }
 
+  /**
+   * v5.15：星期二（date-fns format EEE + zhCN 的短写法）。
+   * 全 App 以前有两种星期写法：「周二」（TasksView）和「星期二」（CalendarView / 首页），
+   * 同一个东西两种长相 ⇒ 现在统一用短的那个。
+   */
+  static weekdayShort(d: Date): string {
+    const names: string[] = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    return names[d.getDay()] ? names[d.getDay()] : '';
+  }
+
+  /**
+   * v5.15：「11月17日 周二」—— 全 App 唯一的「带星期」的日期写法。
+   *
+   * 以前同一个 App 里有四种日期长相：`2026.11.17`、`11/17`、`11.17`、`11月17日`，
+   * 而且星期还有「周二 / 星期二」两种。用户在不同页面看到同一天长得不一样，
+   * 会以为是不同的日子 ⇒ 现在收口成两种：
+   *   · 只写日期 → `D.md()`        「11月17日」
+   *   · 带星期   → `D.mdWeek()`    「11月17日 周二」
+   */
+  static mdWeek(s: string | null): string {
+    const md: string = D.md(s);
+    if (md.length === 0) { return ''; }
+    return `${md} ${D.weekdayShort(D.parse((s as string).slice(0, 10)))}`;
+  }
+
   /** MM.dd（format "MM.dd"） */
   static dotMd(d: Date): string {
     return `${D.p(d.getMonth() + 1)}.${D.p(d.getDate())}`;

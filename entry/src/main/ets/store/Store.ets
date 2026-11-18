@@ -16,6 +16,7 @@ import {
   ProjectCreate, ReviewSave, HabitCreate, HabitLogReq, SettingsPatch, TaskEventLink
 } from '../api/Types';
 import { D } from '../utils/DateUtil';
+import { curPal, paletteList } from '../utils/Theme';
 import { Db } from '../db/Db';
 
 export type Listener = () => void;
@@ -24,6 +25,35 @@ export type Listener = () => void;
  *  （下一次已经另建了一条；这一条收走，不进已完成列、不进统计） */
 export function isConsumedRepeat(t: Task): boolean {
   return t.status === 'done' && t.repeat_rule !== 'none';
+}
+
+/**
+ * v5.15：逾期判定 —— 全 App 只有这一份实现。
+ *
+ * 口径（照抄网页版 components/TasksPage.tsx:199）：
+ *   没完成 + 填了到期日 + 到期日早于今天（按日历日比，不看具体时刻）。
+ *
+ * 为什么要收口：以前首页、任务面板各写一遍自己的判法（一个是 `D.dateOf` 取前 10 位，
+ * 一个是 `slice(0,10)`），两边只要有一个改了、另一个没改，同一件事在两个页面就会
+ * 一个标红一个不标红 —— 用户看到的是「App 自己前后矛盾」。
+ *
+ * 用字符串比日期，不走 D.parse —— 空值会被 parse 成 1899 年，
+ * 那会让「没填到期日」的任务全部变成逾期。
+ */
+export function isOverdue(t: Task): boolean {
+  if (t.status === 'done') { return false; }
+  const due: string | null = t.due_date;
+  if (due === null || due === undefined) { return false; }
+  if (due.length === 0) { return false; }
+  return due.slice(0, 10) < D.today();
+}
+
+/** v5.15：逾期几天（卡片上的「逾期 3 天」） */
+export function overdueDays(t: Task): number {
+  if (!isOverdue(t)) { return 0; }
+  const due: string = t.due_date as string;
+  const days: number = -D.diffDays(D.parse(due.slice(0, 10)), new Date());
+  return days > 0 ? days : 0;
 }
 
 export class Store {
@@ -45,11 +75,27 @@ export class Store {
   lastEventId: number = -1;
   settings: SettingsResp = { user_name: '', ai_base_url: '', ai_model: '', ai_key_set: false };
   links: number[] = [];
+  /** v5.7：铃铛「已读」记录（'|' 分隔的 key），看过的提醒不再亮红点 */
+  bellSeen: string = '';
 
   loaded: boolean = false;
   loading: boolean = false;
   lastError: string = '';
   version: number = 0;
+
+  /**
+   * v5.14：整库读取失败的原因（只记「读」的失败，不是所有操作的失败）。
+   *   为什么要单独记一份：原来 reloadX 各自 catch 掉错误，页面只看到「空列表」——
+   *   「数据库读不出来」和「本来就没数据」在界面上长得一模一样，用户会以为数据没了。
+   *   现在读失败时首页会明确说一句「数据没读出来」。
+   */
+  loadError: string = '';
+  /**
+   * v5.14：上一次搜索失败的原因。
+   *   原来 search() 失败也返回空结果 ⇒ 搜索页显示「没有找到」，
+   *   等于把「搜索坏了」说成「没有这个东西」。现在分开报。
+   */
+  searchError: string = '';
 
   private listeners: Listener[] = [];
 
@@ -71,6 +117,7 @@ export class Store {
   async loadAll(): Promise<void> {
     this.loading = true;
     this.lastError = '';
+    this.loadError = '';   // v5.14：重读一次就重新算，别拿上次的错话吓人
     this.notify();
     await this.reloadTasks();
     await this.reloadEvents();
@@ -81,6 +128,7 @@ export class Store {
     await this.reloadReminders();
     await this.reloadTaskEventLinks();
     await this.reloadSettings();
+    await this.reloadBellSeen();
     this.loaded = true;
     this.loading = false;
     this.notify();
@@ -145,6 +193,72 @@ export class Store {
     this.notify();
   }
 
+  // ───────────────────────── v5.7：铃铛「已读」 ─────────────────────────
+
+  async reloadBellSeen(): Promise<void> {
+    try {
+      this.bellSeen = await Repo.bellSeen();
+    } catch (e) { this.bellSeen = ''; }
+    this.notify();
+  }
+
+  /** 一条提醒的稳定标识：类型+id+时间（改了时间就算新提醒） */
+  bellKey(r: ReminderItem): string {
+    return `${r.kind}:${r.id}:${r.at}`;
+  }
+
+  /** 已看过的提醒 key 列表（存的时候就是用 '|' 拼的，不带首尾竖线） */
+  private bellSeenKeys(): string[] {
+    const out: string[] = [];
+    if (this.bellSeen.length === 0) {
+      return out;
+    }
+    const parts: string[] = this.bellSeen.split('|');
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].length > 0) {
+        out.push(parts[i]);
+      }
+    }
+    return out;
+  }
+
+  /** 还没看过的提醒条数 —— 红点只看这个 */
+  bellUnread(): number {
+    return this.bellUnreadItems().length;
+  }
+
+  /** 还没看过的提醒（给铃铛弹层用）：看过的就不再列出来 */
+  bellUnreadItems(): ReminderItem[] {
+    const seen: string[] = this.bellSeenKeys();
+    const out: ReminderItem[] = [];
+    for (let i = 0; i < this.reminders.length; i++) {
+      const r: ReminderItem = this.reminders[i];
+      if (seen.indexOf(this.bellKey(r)) < 0) {
+        out.push(r);
+      }
+    }
+    return out;
+  }
+
+  /** 打开提醒清单就算看过了，红点灭掉；之后再来新的才重新亮 */
+  async markBellSeen(): Promise<void> {
+    const keys: string[] = this.bellSeenKeys();
+    for (let i = 0; i < this.reminders.length; i++) {
+      const k: string = this.bellKey(this.reminders[i]);
+      if (keys.indexOf(k) < 0) {
+        keys.push(k);
+      }
+    }
+    if (keys.length > 200) {
+      keys.splice(0, keys.length - 200);
+    }
+    this.bellSeen = keys.join('|');
+    this.notify();
+    try {
+      await Repo.setBellSeen(this.bellSeen);
+    } catch (e) { this.fail(e); }
+  }
+
   /** v4.12：把任务和日程关联起来 */
   async linkTaskEvent(taskId: number, eventId: number): Promise<boolean> {
     try {
@@ -171,22 +285,25 @@ export class Store {
     this.notify();
   }
 
-  /** v4.8：深色模式开关（存 setting 表 + AppStorage，AppStorage 驱动界面重画） */
-  async setDark(on: boolean): Promise<boolean> {
+  /** v5.7：配色方案切换（存 setting 表 + AppStorage，AppStorage 驱动界面重画） */
+  async setPalette(idx: number): Promise<boolean> {
     try {
-      await Db.setSetting('dark', on ? '1' : '0');
-      AppStorage.set<boolean>('wb_dark', on);
+      const i: number = (idx < 0 || idx > 4) ? 0 : Math.floor(idx);
+      await Db.setSetting('palette', i.toString());
+      AppStorage.set<number>('wb_pal', i);
       this.notify();
       return true;
     } catch (e) { this.fail(e); this.notify(); return false; }
   }
 
-  /** v4.8：冷启动时把上次的深色设置恢复回来 */
-  async restoreTheme(): Promise<void> {
+  /** v5.7：冷启动时把上次的配色方案恢复回来 */
+  async restorePalette(): Promise<void> {
     try {
-      const v: string = await Db.getSetting('dark', '0');
-      AppStorage.set<boolean>('wb_dark', v === '1');
-    } catch (e) { AppStorage.set<boolean>('wb_dark', false); }
+      const v: string = await Db.getSetting('palette', '0');
+      const n: number = parseInt(v, 10);
+      const i: number = (isNaN(n) || n < 0 || n > 4) ? 0 : n;
+      AppStorage.set<number>('wb_pal', i);
+    } catch (e) { AppStorage.set<number>('wb_pal', 0); }
   }
 
   private applyHabits(r: HabitsResp): void {
@@ -198,6 +315,11 @@ export class Store {
   private fail(e: Object): void {
     const err = e as Error;
     this.lastError = err && err.message ? err.message : '出了点问题';
+    // v5.14：整库读取期间（loading=true）的失败单独记一份，
+    //   这样首页能把「读不出来」和「没数据」分开说。
+    if (this.loading) {
+      this.loadError = this.lastError;
+    }
   }
 
   // ── 任务 ──
@@ -206,10 +328,18 @@ export class Store {
     return undefined;
   }
 
-  /** 乐观更新：先改本地，失败回滚（文档 §12.2） */
-  async toggleTask(id: number): Promise<void> {
+  /**
+   * 乐观更新：先改本地，失败回滚（文档 §12.2）
+   *
+   * v5.14：**改成返回 boolean**。
+   *   原来这个方法内部自己 try/catch，失败也只是回滚 + 记 lastError，
+   *   **永远不会 reject** ⇒ 调用方的 `.catch(...)` 全是死代码，
+   *   用户点了圈圈没反应也没有任何提示（任务状态改失败是静默的）。
+   *   现在失败返回 false，调用方自己 toast，用户才知道「没改成」。
+   */
+  async toggleTask(id: number): Promise<boolean> {
     const t = this.findTask(id);
-    if (!t) { return; }
+    if (!t) { return false; }
     const old: TaskStatus = t.status;
     t.status = old === 'done' ? 'todo' : 'done';
     this.tasks = [...this.tasks];       // V1 里靠整体替换触发刷新
@@ -229,14 +359,21 @@ export class Store {
       t.status = old;
       this.tasks = [...this.tasks];
       this.fail(e);
+      this.notify();
+      return false;
     }
     this.notify();
+    return true;
   }
 
-  /** 改成任意状态（待办 / 进行中 / 完成）。拖拽改状态、圈圈循环都走这里。 */
-  async setTaskStatus(id: number, status: TaskStatus): Promise<void> {
+  /**
+   * 改成任意状态（待办 / 进行中 / 完成）。拖拽改状态、圈圈循环都走这里。
+   * v5.14：同 toggleTask，**改成返回 boolean**，失败时调用方要能提示用户。
+   */
+  async setTaskStatus(id: number, status: TaskStatus): Promise<boolean> {
     const t = this.findTask(id);
-    if (!t || t.status === status) { return; }
+    if (!t) { return false; }
+    if (t.status === status) { return true; }   // 已经是这个状态了，不算失败
     const old: TaskStatus = t.status;
     t.status = status;
     this.tasks = [...this.tasks];       // V1 里靠整体替换触发刷新
@@ -254,8 +391,11 @@ export class Store {
       t.status = old;
       this.tasks = [...this.tasks];
       this.fail(e);
+      this.notify();
+      return false;
     }
     this.notify();
+    return true;
   }
 
   async addTask(body: TaskCreate): Promise<boolean> {
@@ -407,47 +547,42 @@ export class Store {
   }
 
   async search(q: string, kind: string): Promise<SearchResp> {
-    try { return await Repo.search(q, kind); }
-    catch (e) { this.fail(e); return { hits: [], total: 0, counts: [0, 0, 0, 0], tasks: [], notes: [] }; }
+    try {
+      const r: SearchResp = await Repo.search(q, kind);
+      // v5.14：搜成功了就把上次的错清掉
+      this.searchError = '';
+      return r;
+    } catch (e) {
+      this.fail(e);
+      // v5.14：失败要**说清楚是搜索坏了**，不能返回空结果让人以为「没有这个东西」
+      this.searchError = this.lastError;
+      return { hits: [], total: 0, counts: [0, 0, 0, 0], tasks: [], notes: [] };
+    }
   }
 
-  // ── 首页统计（前端算，工作台是服务端算好传 props，这里等价）──
-  get totalTasks(): number { return this.tasks.length; }
-  get doneTasks(): number {
-    let n = 0;
-    for (const t of this.tasks) { if (t.status === 'done') { n += 1; } }
+  // ── v5.15：口径收口 ──
+  // 以前这里有 7 个 getter（totalTasks / doneTasks / doingTasks / todoTasks /
+  // donePercent / todayDone / todayHours），**全工程零调用**（每个页面都自己又算了一遍），
+  // 其中 donePercent 还是「零调用的埋雷」：口径和首页 KPI 不一样，谁哪天真去用它就会算错。
+  // 现在删掉，改成下面三个**有调用点**的唯一实现。
+
+  /** 全部任务数（不含「已消耗的重复原件」——它已经不算一条真任务了） */
+  totalTaskCount(): number {
+    let n: number = 0;
+    for (const t of this.tasks) { if (!isConsumedRepeat(t)) { n += 1; } }
     return n;
   }
-  get doingTasks(): number {
-    let n = 0;
-    for (const t of this.tasks) { if (t.status === 'doing') { n += 1; } }
-    return n;
+
+  /** 已完成的任务列表（同样不含已消耗的重复原件） */
+  doneTaskList(): Task[] {
+    return this.tasks.filter((t: Task) => t.status === 'done' && !isConsumedRepeat(t));
   }
-  get todoTasks(): number {
-    let n = 0;
-    for (const t of this.tasks) { if (t.status === 'todo') { n += 1; } }
-    return n;
-  }
-  get donePercent(): number {
-    return this.totalTasks === 0 ? 0 : Math.round(this.doneTasks * 100 / this.totalTasks);
-  }
-  get todayDone(): number {
-    const today = D.today();
-    let n = 0;
-    for (const t of this.tasks) {
-      if (t.status === 'done' && t.done_at && D.dateOf(t.done_at) === today) { n += 1; }
-    }
-    return n;
-  }
-  get todayHours(): string {
-    let mins = 0;
-    const today = D.today();
-    for (const t of this.tasks) {
-      if (t.status === 'done' && t.done_at && D.dateOf(t.done_at) === today) {
-        mins += t.estimate_min ? t.estimate_min : 0;
-      }
-    }
-    return (mins / 60).toFixed(1);
+
+  /** 完成率（0–100）= 已完成 ÷ 全部任务。首页 KPI、任务面板统计、设置页统计共用这一份。 */
+  completedRate(): number {
+    const total: number = this.totalTaskCount();
+    if (total === 0) { return 0; }
+    return Math.round(this.doneTaskList().length * 100 / total);
   }
 
   /** 最近 7 天完成数，按 done_at */
@@ -488,7 +623,7 @@ export class Store {
   areaStats(): AreaStat[] {
     const keys: string[] = ['work', 'side', 'media', 'study', 'life'];
     const labels: string[] = ['工作', '副业', '自媒体', '学习', '生活'];
-    const colors: string[] = ['#1A6499', '#6650C8', '#A54A1E', '#14765F', '#8A5A0F'];
+    const colors: string[] = paletteList(curPal(), 'domain5');
     const out: AreaStat[] = [];
     for (let i = 0; i < keys.length; i++) {
       let total = 0;

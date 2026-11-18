@@ -12,7 +12,7 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     // v4.0：全部数据在本机。onCreate 里先把本地库打开并建好表，
     // 页面渲染时直接读本地库，不会闪「加载中」。
-    // v4.4：记录灵感的编辑器弹窗状态放在 AppStorage 里
+    // v4.4：随手记的编辑器弹窗状态放在 AppStorage 里
     // （@StorageLink 要求 key 先存在，否则运行时报错）
     AppStorage.setOrCreate<boolean>('wb_note_editor_open', false);
     AppStorage.setOrCreate<boolean>('wb_dragging', false);
@@ -30,6 +30,10 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate<string>('wb_edge_hint_text', '');
     AppStorage.setOrCreate<number>('wb_edge_hint_side', 0);
     AppStorage.setOrCreate<number>('wb_edge_hint_seq', 0);
+    // v5.0：页面滚动偏移（背景光斑视差用，@StorageLink 要求 key 先存在）
+    AppStorage.setOrCreate<number>('wb_scroll_y', 0);
+    // v5.7：配色方案索引 0..4（默认 4 = 雾紫冷调 = 老版本那套）
+    AppStorage.setOrCreate<number>('wb_pal', 0);
     this.launchPage = this.pageFromWant(want);
     // 本地库闸门：开库 + 建表 + 铺示例数据，只做一次；页面等 Boot.when() 再读数据
     Boot.start(this.context);
@@ -52,7 +56,7 @@ export default class EntryAbility extends UIAbility {
    *  v4.4：以前不校验，非法 page 会一路走到 Index 的兜底分支，渲染出一个「更多」死页面。
    */
   private static readonly DEEP_PAGES: string[] =
-    ['home', 'tasks', 'calendar', 'notes', 'all', 'habits', 'projects', 'review', 'stats', 'search', 'settings'];
+    ['home', 'tasks', 'calendar', 'notes', 'all', 'habits', 'projects', 'review', 'search', 'settings'];
 
   /** v4.20：从深链 Want.parameters 里读出目标页面（wb_page） */
   private pageFromWant(want: Want): string {

@@ -15,12 +15,12 @@
 //   为什么绕 openCustomDialog：删除按钮在 bindSheet 弹层里时，页面级遮罩盖不住 sheet，
 //   openCustomDialog 是系统级弹窗层，和系统 AlertDialog 同级，能压在 sheet 上面。
 import { sym } from './Icon';
-import { onFill, tc, tk } from '../utils/Theme';
+import { onFill, S, sheetShadow, tc, tk } from '../utils/Theme';
 
 @Component
 export struct ConfirmDialog {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop visible: boolean = false;
   @Prop title: string = '';
   @Prop desc: string = '';
@@ -61,12 +61,12 @@ export struct ConfirmDialog {
       Row() {
         Blank()
         SymbolGlyph(sym('close'))
-          .fontSize(14)
-          .fontColor([tc(this.dark, '#8FA2B3', 1)])
+          .fontSize(S.cardTitleSize)
+          .fontColor([tc(this.pal, '#8FA2B3', 1)])
           .width(28)
           .height(28)
-          .borderRadius(9)
-          .backgroundColor(tc(this.dark, '#F4F9FD', 0))
+          .borderRadius(S.radiusSm)
+          .backgroundColor(tc(this.pal, '#F4F9FD', 0))
           .onClick(() => { this.onCancel(); })
       }
       .width('100%')
@@ -75,71 +75,71 @@ export struct ConfirmDialog {
       // 图标
       Row() {
         SymbolGlyph(sym(this.danger ? 'trash' : 'bulb'))
-          .fontSize(19)
-          .fontColor([this.danger ? tc(this.dark, '#D2795C', 1) : tc(this.dark, '#1F9E9A', 1)])
+          .fontSize(S.dialogSize)
+          .fontColor([this.danger ? tc(this.pal, '#D2795C', 1) : tc(this.pal, '#3F2675', 1)])
       }
       .width(46)
       .height(46)
-      .borderRadius(15)
-      .backgroundColor(this.danger ? tc(this.dark, '#FDEDEA', 0) : tc(this.dark, '#E9F7F6', 0))
+      .borderRadius(S.radiusCard)
+      .backgroundColor(this.danger ? tc(this.pal, '#FDEDEA', 0) : tc(this.pal, '#E9F7F6', 0))
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
-      .margin({ top: 2, bottom: 14 })
+      .margin({  top: S.spaceXs, bottom: S.space3Xl  })
 
       // 标题
       Text(this.title)
-        .fontSize(16.5)
+        .fontSize(S.iconSize)
         .fontWeight(FontWeight.Bold)
-        .fontColor(tc(this.dark, '#1D2A38', 1))
+        .fontColor(tc(this.pal, '#1D2A38', 1))
         .textAlign(TextAlign.Center)
         .width('100%')
 
       // 说明
       if (this.desc.length > 0) {
         Text(this.desc)
-          .fontSize(12)
-          .fontColor(tc(this.dark, '#78899C', 1))
+          .fontSize(S.smallSize)
+          .fontColor(tc(this.pal, '#78899C', 1))
           .lineHeight(21)
           .textAlign(TextAlign.Center)
           .width('100%')
-          .margin({ top: 6 })
+          .margin({  top: S.spaceMd  })
       }
 
       // 两个按钮
-      Row({ space: 9 }) {
+      Row({  space: S.spaceXl  }) {
         Text(this.cancelText)
-          .fontSize(12.5)
+          .fontSize(S.bodySize)
           .fontWeight(FontWeight.Medium)
-          .fontColor(tc(this.dark, '#5E7183', 1))
+          .fontColor(tc(this.pal, '#5E7183', 1))
           .textAlign(TextAlign.Center)
           .layoutWeight(1)
           .height(38)
-          .borderRadius(11)
-          .backgroundColor(tc(this.dark, '#F5FAFD', 0))
-          .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6EFF8', 2), 2) })
+          .borderRadius(S.radiusBtn)
+          .backgroundColor(tc(this.pal, '#F5FAFD', 0))
+          .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E6EFF8', 2), 2) })
           .onClick(() => { this.onCancel(); })
 
         Text(this.confirmText)
-          .fontSize(12.5)
+          .fontSize(S.bodySize)
           .fontWeight(FontWeight.Medium)
-          .fontColor(onFill(this.dark))
+          .fontColor(onFill(this.pal))
           .textAlign(TextAlign.Center)
           .layoutWeight(1)
           .height(38)
-          .borderRadius(11)
-          .backgroundColor(this.danger ? tc(this.dark, '#E89079', 0) : tc(this.dark, '#3AC8C2', 0))
+          .borderRadius(S.radiusBtn)
+          .backgroundColor(this.danger ? tc(this.pal, '#A83440', 0) : tc(this.pal, '#523593', 0))
           .onClick(() => { this.onConfirm(); })
       }
       .width('100%')
-      .margin({ top: 20 })
+      .margin({  top: S.space6Xl  })
     }
     .width('88%')
     .constraintSize({ maxWidth: 380 })
-    .padding({ left: 26, right: 26, top: 14, bottom: 20 })
-    .borderRadius(22)
-    .backgroundColor(tc(this.dark, '#FFFFFF', 0))
-    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#EAF2F9', 2), 2) })
-    .shadow({ radius: 30, color: 'rgba(23,52,80,0.24)', offsetX: 0, offsetY: 14 })
+    .padding({  left: 26, right: 26, top: S.space3Xl, bottom: S.space6Xl  })
+    .borderRadius(S.radiusSheet)
+    .backgroundColor(tc(this.pal, '#FFFFFF', 0))
+    .border({ width: 1, color: tc(this.pal, tc(this.pal, '#EAF2F9', 2), 2) })
+    .shadow(sheetShadow(this.pal))
     .alignItems(HorizontalAlign.Center)
     .transition(TransitionEffect.OPACITY.animation({ duration: 180 }))
   }

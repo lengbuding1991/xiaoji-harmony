@@ -11,7 +11,7 @@
  *   remind_min 字段在 db 里保留：老任务的提前量继续生效（App 内铃铛清单照旧提前显示），
  *   编辑老任务时不带 remind_min 字段 ⇒ 不会把老数据抹掉。
  */
-import { C, areaLabel, tk, tc } from '../utils/Theme';
+import { areaLabel, S, tc, tk } from '../utils/Theme';
 import { D } from '../utils/DateUtil';
 import { sym } from './Icon';
 import {
@@ -26,6 +26,7 @@ import { Repo } from '../db/Repo';
 import { Confirm } from '../utils/Confirm';
 import { ConfirmDialog } from './ConfirmDialog';
 import { R } from '../utils/Responsive';
+import { toast } from '../utils/Toast';
 import { onEdgeScrolled, onEdgeWillScroll } from '../utils/EdgeHint';
 
 interface LinkBody { note_id: number; task_id: number }
@@ -40,7 +41,7 @@ const RULE_LABELS: string[] = ['不重复', '每天', '每个工作日', '每周
 @Component
 export struct TaskSheet {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @Prop @Watch('reload') editingId: number = -1;
   @Prop @Watch('reload') defaultStatus: string = 'todo';
   onSaved: () => void = () => {
@@ -119,7 +120,7 @@ export struct TaskSheet {
     let n: number = 0;
     for (const e of list) {
       if (n >= 20) { break; }
-      labels.push(`${D.slashMd(D.parse(e.start_at))} ${D.hm(e.start_at)} · ${e.title}`);
+      labels.push(`${D.md(e.start_at)} ${D.hm(e.start_at)} · ${e.title}`);
       ids.push(e.id);
       n += 1;
     }
@@ -456,6 +457,9 @@ export struct TaskSheet {
     this.busy = false;
     if (ok) {
       this.onCancel();
+      // v5.14：删除成功也说一声 —— 原来删完一点声音都没有，
+      //   用户会以为没删掉（弹窗关了就什么都没了）。
+      toast(this.getUIContext(), '删掉了');
     } else {
       this.err = Store.I.lastError.length > 0 ? Store.I.lastError : '删除失败，再试一次';
     }
@@ -463,24 +467,24 @@ export struct TaskSheet {
 
   /** 编辑态「相关记录」区（.note-links） */
   @Builder noteLinks() {
-    Column({ space: 7 }) {
-      Text('相关记录').fontSize(10.5).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#8FA2B3', 1))
+    Column({  space: S.spaceLg  }) {
+      Text('相关记录').fontSize(S.subSize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#8FA2B3', 1))
       if (this.linked.length === 0) {
-        Text('还没有记录提到它。').fontSize(11).fontColor(tc(this.dark, '#A9BCCA', 1))
+        Text('还没有记录提到它。').fontSize(S.labelSize).fontColor(tc(this.pal, '#A9BCCA', 1))
       }
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(this.linked, (l: TaskNoteLink) => {
-          Row({ space: 5 }) {
+          Row({  space: S.spaceMd  }) {
             Text(l.title.length > 0 ? l.title : '无标题记录')
-              .fontSize(10.5).fontColor(tc(this.dark, '#1B7F76', 1)).maxLines(1)
-            SymbolGlyph(sym('close')).fontSize(14).fontColor([tc(this.dark, '#1B7F76', 1)])
+              .fontSize(S.subSize).fontColor(tc(this.pal, '#3F2675', 1)).maxLines(1)
+            SymbolGlyph(sym('close')).fontSize(S.cardTitleSize).fontColor([tc(this.pal, '#3F2675', 1)])
               .onClick(() => { this.removeLink(l.note_id); })
           }
-          .padding({ left: 9, right: 5, top: 3, bottom: 3 })
-          .borderRadius(8)
-          .backgroundColor(tc(this.dark, '#EAF8F6', 0))
-          .border({ width: 1, color: tc(this.dark, tc(this.dark, '#C9EDE8', 2), 2) })
-          .margin({ right: 6, bottom: 6 })
+          .padding({  left: S.spaceXl, right: S.spaceMd, top: S.spaceSm, bottom: S.spaceSm  })
+          .borderRadius(S.radiusSm)
+          .backgroundColor(tc(this.pal, '#EAF8F6', 0))
+          .border({ width: 1, color: tc(this.pal, tc(this.pal, '#C9EDE8', 2), 2) })
+          .margin({  right: S.spaceMd, bottom: S.spaceMd  })
         }, (l: TaskNoteLink) => `nl-${l.id}`)
       }
       .width('100%')
@@ -494,10 +498,10 @@ export struct TaskSheet {
       }
     }
     .width('100%')
-    .padding({ left: 11, right: 11, top: 9, bottom: 9 })
-    .borderRadius(11)
-    .backgroundColor(tc(this.dark, '#FAFCFE', 0))
-    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E9F2F9', 2), 2) })
+    .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+    .borderRadius(S.radiusBtn)
+    .backgroundColor(tc(this.pal, '#FAFCFE', 0))
+    .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E9F2F9', 2), 2) })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -512,36 +516,36 @@ export struct TaskSheet {
         })
       }
       .width('100%')
-      .padding({ left: 18, right: 18, top: 18 })
+      .padding({  left: S.space5Xl, right: S.space5Xl, top: S.space5Xl  })
 
       Scroll() {
-        Column({ space: 11 }) {
+        Column({  space: S.space2Xl  }) {
           FormBox({ label: '任务' }) {
             TextInput({ placeholder: '比如：把周报写完发出去', text: this.title })
               .onChange((v: string) => { this.title = v; })
-              .fontSize(12).height(36)
+              .fontSize(S.smallSize).height(36)
               .placeholderFont({ size: 12 })
-              .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-              .fontColor(tk(this.dark, 'text'))
-              .caretColor(tk(this.dark, 'brand'))
-              .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-              .border({ width: 1, color: tk(this.dark, 'line') })
-              .padding({ left: 11, right: 11 })
+              .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+              .fontColor(tk(this.pal, 'text'))
+              .caretColor(tk(this.pal, 'brand'))
+              .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .padding({  left: S.space2Xl, right: S.space2Xl  })
           }
           FormBox({ label: '备注' }) {
             TextInput({ placeholder: '可选', text: this.note })
               .onChange((v: string) => { this.note = v; })
-              .fontSize(12).height(36)
+              .fontSize(S.smallSize).height(36)
               .placeholderFont({ size: 12 })
-              .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-              .fontColor(tk(this.dark, 'text'))
-              .caretColor(tk(this.dark, 'brand'))
-              .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-              .border({ width: 1, color: tk(this.dark, 'line') })
-              .padding({ left: 11, right: 11 })
+              .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+              .fontColor(tk(this.pal, 'text'))
+              .caretColor(tk(this.pal, 'brand'))
+              .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .padding({  left: S.space2Xl, right: S.space2Xl  })
           }
 
-          Column({ space: 11 }) {
+          Column({  space: S.space2Xl  }) {
             FormBox({ label: '分类' }) {
               PickerBox({
                 text: areaLabel(this.area),
@@ -559,7 +563,7 @@ export struct TaskSheet {
           }
           .width('100%')
 
-          Column({ space: 11 }) {
+          Column({  space: S.space2Xl  }) {
             FormBox({ label: '项目' }) {
               PickerBox({
                 text: this.projText(),
@@ -572,14 +576,14 @@ export struct TaskSheet {
             FormBox({ label: '标签' }) {
               TextInput({ placeholder: '用逗号分隔', text: this.tags })
                 .onChange((v: string) => { this.tags = v; })
-                .fontSize(12).height(36)
+                .fontSize(S.smallSize).height(36)
                 .placeholderFont({ size: 12 })
-                .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-                .fontColor(tk(this.dark, 'text'))
-                .caretColor(tk(this.dark, 'brand'))
-                .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-                .border({ width: 1, color: tk(this.dark, 'line') })
-                .padding({ left: 11, right: 11 })
+                .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+                .fontColor(tk(this.pal, 'text'))
+                .caretColor(tk(this.pal, 'brand'))
+                .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+                .border({ width: 1, color: tk(this.pal, 'line') })
+                .padding({  left: S.space2Xl, right: S.space2Xl  })
             }
           }
           .width('100%')
@@ -592,7 +596,7 @@ export struct TaskSheet {
             })
           }
 
-          Column({ space: 11 }) {
+          Column({  space: S.space2Xl  }) {
             FormBox({ label: '截止时间' }) {
               DateBox({
                 text: this.dueText(),
@@ -617,21 +621,21 @@ export struct TaskSheet {
               TextInput({ placeholder: '可选', text: this.estMin })
                 .onChange((v: string) => { this.estMin = v; })
                 .type(InputType.Number)
-                .fontSize(12).height(36)
+                .fontSize(S.smallSize).height(36)
                 .placeholderFont({ size: 12 })
-                .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-                .fontColor(tk(this.dark, 'text'))
-                .caretColor(tk(this.dark, 'brand'))
-                .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-                .border({ width: 1, color: tk(this.dark, 'line') })
-                .padding({ left: 11, right: 11 })
+                .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+                .fontColor(tk(this.pal, 'text'))
+                .caretColor(tk(this.pal, 'brand'))
+                .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+                .border({ width: 1, color: tk(this.pal, 'line') })
+                .padding({  left: S.space2Xl, right: S.space2Xl  })
             }
           }
           .width('100%')
 
           HintLine({ text: '截止时间留空 = 长期任务，一直挂着，不会算逾期。开始时间留空就自动按「创建时间」推；截止时间已经过去的话，就从截止那天算起。' })
 
-          Column({ space: 11 }) {
+          Column({  space: S.space2Xl  }) {
             FormBox({ label: '重复', icon: 'undo' }) {
               PickerBox({
                 text: RULE_LABELS[this.ruleIndex()],
@@ -662,7 +666,7 @@ export struct TaskSheet {
           }
         }
         .width('100%')
-        .padding({ left: 18, right: 18, top: 11, bottom: 18 })
+        .padding({  left: S.space5Xl, right: S.space5Xl, top: S.space2Xl, bottom: S.space5Xl  })
         .alignItems(HorizontalAlign.Start)
       }
       .onScrollEdge(onEdgeScrolled)
@@ -677,7 +681,7 @@ export struct TaskSheet {
           FormErr({ msg: this.err })
         }
         .width('100%')
-        .padding({ left: 18, right: 18, top: 8 })
+        .padding({  left: S.space5Xl, right: S.space5Xl, top: S.spaceLg  })
       }
 
       SheetActs({
@@ -691,8 +695,8 @@ export struct TaskSheet {
       })
     }
     .width('100%')
-    .backgroundColor(tk(this.dark, 'card'))
-    .borderRadius(22)
+    .backgroundColor(tk(this.pal, 'card'))
+    .borderRadius(S.radiusSheet)
   }
 
   private statusIndex(): number {

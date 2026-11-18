@@ -6,12 +6,22 @@
 //   2) 备份与恢复：导出 JSON 到文件（v4.30，主）/ 到剪贴板（临时搬运）/ 从文件或剪贴板恢复
 //   3) 清空全部数据（自绘确认弹窗）
 // v4.20：零权限 —— 系统通知 / 代理提醒整条线已移除，本 App 不申请任何系统权限。
+// v5.17：版式从「8 张平级大卡」改成「3 个分组 + 设置行清单」——
+//   分组一 · 我的数据：本地数据 / 备份与恢复 / 清空全部数据
+//   分组二 · 偏好    ：怎么称呼我 / 外观 / 提醒清单
+//   分组三 · 关于    ：隐私与协议 / 关于小记
+//   每组一个标题（复用 components/Widgets.ets 的 SecHead）+ 一份行清单；
+//   行之间用 1px 分隔线（tk(pal,'line')）断开，不再每行套一张卡（嵌套卡会显碎）；
+//   行的可点高度 ≥ 48vp（无障碍）。
+//   功能一个没删：导出（文件/剪贴板）、恢复（文件/粘贴）、清空、称呼保存、
+//   五套配色、隐私协议跳转、busy 守卫、自绘确认弹窗全部保留。
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { Store } from '../store/Store';
 import { Repo } from '../db/Repo';
-import { C, onFill, S, tc, tk } from '../utils/Theme';
+import { S, brandGradient, cardShadow, onFill, sheetShadow, tk, tkInk } from '../utils/Theme';
+import { R } from '../utils/Responsive';
+import { PALETTES, PaletteDef } from '../utils/Palette';
 import { D } from '../utils/DateUtil';
-import { Card } from '../components/Card';
 import { sym } from '../components/Icon';
 import { toast } from '../utils/Toast';
 import { Confirm } from '../utils/Confirm';
@@ -21,12 +31,17 @@ import { bundleManager, common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { FileBackup } from '../utils/Backup';
 import { TopBar } from '../components/TopBar';
+import { SetRow } from '../components/SetRow';
 import { onEdgeScrolled, onEdgeWillScroll } from '../utils/EdgeHint';
 
 @Component
 export struct SettingsView {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
+  // v5.17：宽屏列数（>1180vp 三列 / >820vp 两列 / 更窄一列）。
+  //   R.cols() 读的是 AppStorage，改窗口大小时不会自己触发本页重画 ⇒ 这里挂一个 @StorageLink，
+  //   窗口宽度一变（旋转、分屏、拖窗口）本页就会重画，栅格列数跟着变。
+  @StorageLink('wb_cols') cols: number = 1;
   @State tick: number = 0;
   @State settings: SettingsResp = { user_name: '', ai_base_url: '', ai_model: '', ai_key_set: false };
   @State tasks: Task[] = [];
@@ -38,6 +53,9 @@ export struct SettingsView {
   // 导入/清空之后数字不会自己变，所以改成同步一份到 @State。
   @State habits: HabitView[] = [];
   @State userName: string = '';
+  // v5.7：上次「保存」时写进库的称呼。用来判断输入框里的字是不是用户正在新敲的 ——
+  //   只有没在改的时候才让 Store 的值回填输入框，否则用户正打字会被 store 通知冲掉。
+  private lastSavedName: string = '';
   // v4.25：这几页的「多少条」不能直接写 `${this.tasks.length}`。
   //   ArkUI V1 不会因为「@State 数组换了个新引用」就重画那个只读了 .length 的节点 ——
   //   内存里 this.tasks 已经是空数组了，界面还显示着旧的数字（AGC 审核在 Mate 80 Pro 上
@@ -53,6 +71,8 @@ export struct SettingsView {
   @State appVersion: string = 'v1.0.0';
   @State busy: boolean = false;
   @State backupText: string = '';
+  // v5.17：备份卡的「粘贴恢复」框默认收起 —— 把原来那张又长又大的卡折进一行小字链接后面。
+  @State showPaste: boolean = false;
   private unsub: () => void = () => {};
 
   private readVersion(): void {
@@ -66,6 +86,15 @@ export struct SettingsView {
 
   private syncStore(): void {
     this.settings = Store.I.settings;
+    // v5.7：称呼也要跟着 Store 走。
+    //   之前只有 aboutToAppear 才把 Store 的称呼灌进输入框，于是「恢复备份」之后
+    //   输入框还是空的 —— 看着像没恢复，其实库里已经写回去了；用户再点一次「保存名字」
+    //   就把恢复好的称呼又覆盖成空。
+    const n: string = this.settings.user_name;
+    if (this.userName === this.lastSavedName) {
+      this.userName = n;
+    }
+    this.lastSavedName = n;
     this.tasks = Store.I.tasks;
     this.notes = Store.I.notes;
     this.reviews = Store.I.reviews;
@@ -80,12 +109,15 @@ export struct SettingsView {
     this.nHabits = this.habits.length;
   }
   onNavigate: (page: string) => void = () => {};
+  // v5.17：二级页返回（Index 传进来的）
+  onBack: () => void = () => {};
 
   aboutToAppear(): void {
     this.readVersion();
     this.syncStore();
     this.unsub = Store.I.subscribe(() => { this.tick += 1; this.syncStore(); });
     this.userName = this.settings.user_name;
+    this.lastSavedName = this.userName;
   }
 
   aboutToDisappear(): void {
@@ -187,6 +219,9 @@ export struct SettingsView {
     try {
       const r = await Repo.importJson(text);
       await Store.I.loadAll();
+      // v5.7：恢复完要把称呼也刷回输入框（备份里带称呼，一起恢复了）
+      this.userName = this.settings.user_name;
+      this.lastSavedName = this.userName;
       this.backupText = '';
       toast(this.getUIContext(), `已恢复 ${r.count} 条内容`);
     } catch (e) {
@@ -213,6 +248,9 @@ export struct SettingsView {
 
   /** 清空全部数据（危险操作，必须走自绘确认弹窗） */
   private askClear(): void {
+    // v5.14：正在忙（比如正在恢复备份）时不要弹清空框 ——
+    //   两个操作叠在一起，用户会以为点错了。
+    if (this.busy) { return; }
     Confirm.open(this.getUIContext(), () => { this.confirmBuilder(); },
       '清空全部数据？',
       '这台手机上的任务、日程、记录、项目、复盘、习惯，还有你的称呼，都会被删除，删掉找不回来。建议先复制一份备份。',
@@ -221,15 +259,24 @@ export struct SettingsView {
   }
 
   private async doClear(): Promise<void> {
+    // v5.14：加 busy 守卫 —— 连点两下「全部清空」会跑两次 clearAll，
+    //   第一次还没跑完第二次就开始（而且 Restore 也在跑的话更乱）。
+    if (this.busy) { return; }
+    this.busy = true;
     try {
+      // v5.14：clearAll 现在包在事务里 —— 中途出错会整体回滚，
+      //   不会像以前那样留下「清了一半」的库，界面却还说清成功了。
       await Repo.clearAll();
       await Store.I.loadAll();
       // v4.28：称呼也是一起被清掉的，输入框里那个旧名字也要跟着清 ——
       // 之前只刷了 Store，输入框还留着旧值，看着像没清干净，再点保存又会写回去。
       this.userName = '';
+      this.lastSavedName = '';
       toast(this.getUIContext(), '已清空');
     } catch (e) {
       toast(this.getUIContext(), '清空失败：' + (e as Error).message);
+    } finally {
+      this.busy = false;
     }
   }
 
@@ -253,75 +300,146 @@ export struct SettingsView {
     // v4.4：用 saveSettings 的返回值判成败。原来读 Store.I.lastError ——
     // 那个值可能是上一次搜索失败留下的，保存成功也会弹一个旧错误。
     const ok: boolean = await Store.I.saveSettings(body);
+    if (ok) {
+      this.lastSavedName = this.userName;
+    }
     toast(this.getUIContext(), ok ? '存好了' : '没存上，再试一次');
   }
 
-  /** v4.8：切换深色模式（存本地 + 立刻生效） */
-  private toggleDark(on: boolean): void {
-    AppStorage.set<boolean>('wb_dark', on);
-    this.dark = on;
-    Store.I.setDark(on).then((ok: boolean) => {
+  /** v5.7：切换配色方案（存本地 + 立刻生效） */
+  private pickPalette(idx: number): void {
+    AppStorage.set<number>('wb_pal', idx);
+    this.pal = idx;
+    Store.I.setPalette(idx).then((ok: boolean) => {
       if (!ok) {
         toast(this.getUIContext(), '没存上，重启后再试一次');
       }
     });
   }
 
-  // ── 小块组件 ──
-  @Builder fieldLabel(text: string) {
-    Text(text).fontSize(9.5).fontColor(tc(this.dark, '#8FA2B3', 1)).width('100%')
+  // ───────────────────── v5.20：设置页重做（版式全换） ─────────────────────
+  //
+  //  为什么重做：v5.17 把 8 张平级大卡压成「3 个分组 + 行清单」，但每行里
+  //  塞着「标题 + 副标题 + 1~2 个按钮」，一屏 8 个功能挤成一团，看着乱。
+  //
+  //  现在的样子（照系统设置页）：
+  //    组标题（小字灰）→ 一张卡 → 卡里一行一个功能
+  //      左：图标块（32vp 圆角底 + 符号）
+  //      中：标题 + 一行说明
+  //      右：值 / 箭头 / 按钮
+  //    真正的操作收进底部抽屉：
+  //      「备份与恢复」→ 抽屉里 4 个动作（导出为文件 / 从文件恢复 / 复制备份 / 粘贴恢复）
+  //      「外观」→ 抽屉里 5 套配色
+  //    主页面因此只剩 8 行，一眼扫得完。
+  //
+  //  配色没有新造，还是 utils/Palette.ets 里那五套（A 深海青 / B 靛蓝墨 /
+  //  C 墨绿米白 / D 陶土暖橙 / E 雾紫冷调，默认 E）。
+  //  功能一个没删：导出（文件/剪贴板）、恢复（文件/粘贴）、清空、称呼保存、
+  //  换配色、隐私协议跳转、busy 守卫、自绘确认弹窗全部保留。
+
+  /** 分隔线的缩进（卡内左边距 + 图标块 + 间距），让线不顶到图标 */
+  private rowIndent: number = 44;
+  /** 设置行的最小高度 */
+  private rowMinH: number = 56;
+  /** 称呼输入框高度 */
+  private nameInputH: number = 38;
+  /** 粘贴备份内容的输入框高度 */
+  private pasteBoxH: number = 84;
+  /** v5.20：抽屉开着吗 + 抽屉里放什么（1 = 备份，2 = 配色） */
+  @State showSheet: boolean = false;
+  @State sheetMode: number = 0;
+
+  private openBackup(): void {
+    this.sheetMode = 1;
+    this.showSheet = true;
   }
 
-  @Builder primaryBtn(text: string, cb: () => void) {
+  private openPalette(): void {
+    this.sheetMode = 2;
+    this.showSheet = true;
+  }
+
+  /** v5.20：宽屏？宽屏的抽屉改成居中卡片 */
+  private wideMode(): boolean {
+    return R.wide();
+  }
+
+  // ── 设置行的零件 ──
+
+  /** 组标题：小字灰，缩进一点（系统设置页的样子） */
+  @Builder
+  groupTitle(text: string, first: boolean) {
     Text(text)
-      .fontSize(11.5).fontWeight(FontWeight.Medium).fontColor(onFill(this.dark))
+      .fontSize(S.smallSize)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(tk(this.pal, 'textSub'))
+      .letterSpacing(0.8)
+      .width('100%')
+      .padding({ left: S.spaceSm, top: first ? S.spaceXl : S.space6Xl, bottom: S.spaceLg })
+  }
+
+  /** 行之间的细线（缩进到文字起点） */
+  @Builder
+  rowDivider() {
+    Divider().color(tk(this.pal, 'line')).strokeWidth(1).margin({ left: this.rowIndent })
+  }
+
+  /** 主色小按钮（品牌渐变底） */
+  @Builder
+  miniPrimaryBtn(text: string, cb: () => void) {
+    Text(text)
+      .fontSize(S.labelSize)
+      .fontColor(onFill(this.pal))
       .textAlign(TextAlign.Center)
-      .padding({ top: 9, bottom: 9 })
-      .borderRadius(S.radiusBtn)
-      .linearGradient({ angle: 140, colors: [['#1C7C74', 0], ['#1B7799', 1]] })
-      .layoutWeight(1)
+      .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+      .borderRadius(S.radiusSm)
+      .linearGradient(brandGradient(this.pal))
       .onClick(cb)
   }
 
-  @Builder ghostBtn(text: string, cb: () => void) {
+  /** 次级小按钮（描边） */
+  @Builder
+  miniGhostBtn(text: string, cb: () => void) {
     Text(text)
-      .fontSize(11.5).fontColor(tc(this.dark, '#5E7183', 1))
+      .fontSize(S.labelSize)
+      .fontColor(tkInk(this.pal, 'brandDeep'))
       .textAlign(TextAlign.Center)
-      .padding({ top: 9, bottom: 9 })
-      .borderRadius(S.radiusBtn)
-      .backgroundColor(tc(this.dark, '#FFFFFF', 0))
-      .border({ width: 1, color: tk(this.dark, 'line') })
-      .layoutWeight(1)
+      .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+      .borderRadius(S.radiusSm)
+      .backgroundColor(tk(this.pal, 'card'))
+      .border({ width: 1, color: tk(this.pal, 'line') })
+      .onClick(cb)
+  }
+
+  /** 纯文字按钮（无底色，用在次级入口上） */
+  @Builder
+  textBtn(text: string, cb: () => void) {
+    Text(text)
+      .fontSize(S.labelSize)
+      .fontColor(tkInk(this.pal, 'brandDeep'))
+      .padding({  left: S.spaceSm, right: S.spaceSm, top: S.spaceXs, bottom: S.spaceXs  })
       .onClick(cb)
   }
 
   /**
-   * 概览三格。
+   * 本地数据的紧凑数字摘要。
    *
-   * v4.25：数字必须在 **builder 内部直接读 state**，不能当参数从外面传进来。
-   *   ArkUI V1 里 @Builder 的参数是「按值传」——父组件 build() 时算好一次就冻住了；
-   *   把 `${this.nTasks}` 这种「读 state 算出来的值」当参数传，
-   *   builder 自己并不会因此产生对 state 的依赖 ⇒ state 变了它也不重画
-   *   （AGC 审核报的「清空数据后设置页数字没变」就是这个）。
-   *   ⇒ 传「是哪一类」，在 builder 里直接读对应的 @State 数字（跟 TasksView 的 tstat 同一个套路）。
+   * ⚠️ 数字必须在 builder 内部直接读 state —— ArkUI V1 里 @Builder 的参数是按值传的，
+   *    把算出来的值当参数传进来，state 变了这里不会重画（v4.25 踩过这个坑）。
    */
-  @Builder statBox(kind: string, label: string, sub: string) {
-    Column({ space: 2 }) {
-      Text(kind === 'tasks' ? `${this.nTasks}` : (kind === 'notes' ? `${this.nNotes}` : `${this.nReviews}`))
-        .fontSize(20).fontWeight(FontWeight.Bold).fontColor(tc(this.dark, '#2E4A5E', 1)).letterSpacing(-0.5)
-      Text(label).fontSize(9.5).fontColor(tc(this.dark, '#9FB2C2', 1))
-      Text(sub).fontSize(8.5).fontColor(tc(this.dark, '#B6C7D4', 1))
-    }
-    .layoutWeight(1)
-    .padding({ left: 12, right: 12, top: 11, bottom: 11 })
-    .borderRadius(13)
-    .backgroundColor(tc(this.dark, '#F7FBFE', 0))
-    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E9F3FA', 2), 2) })
-    .alignItems(HorizontalAlign.Start)
+  @Builder
+  localSummary() {
+    Text(`${this.nTasks} 任务 · ${this.nEvents} 日程 · ${this.nNotes} 记录 · ${this.nProjects} 项目 · ${this.nReviews} 复盘 · ${this.nHabits} 习惯`)
+      .fontSize(S.labelSize)
+      .fontColor(tk(this.pal, 'textSub'))
+      .maxLines(2)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
   }
 
   @Builder pageTop() {
     TopBar({
+      backLabel: '返回',
+      onBack: () => { this.onBack(); },
       showBell: false,
       onSearch: () => { this.onNavigate('search'); },
       onCalendar: () => { this.onNavigate('calendar'); }
@@ -329,279 +447,480 @@ export struct SettingsView {
       .width('100%')
   }
 
-  build() {
-    Scroll() {
+  /**
+   * v5.17 宽屏两栏：栅格总列数。
+   * 网页端 .settings-grid 是两列，首页 .home-grid 是三列 ⇒ 宽屏最多三列（1/2/3），手机一列。
+   */
+  private gridCols(): number {
+    return this.cols >= 1 ? this.cols : 1;
+  }
+
+  /**
+   * v5.17 宽屏两栏：某个块占几列（同 HomeView 的写法）。
+   * 权重 3 = 整行，权重 2 = 两列，权重 1 = 一列；手机上永远一列。
+   */
+  private spanFor(weight: number): number {
+    const c: number = this.cols;
+    if (weight >= 3 && c >= 2) { return c; }
+    if (weight >= 2 && c >= 3) { return 2; }
+    return 1;
+  }
+
+  // ───────────────────── 分组一 · 我的数据 ─────────────────────
+
+  /**
+   * 「本地数据」这一行单独写 —— 它的副标题（多少条）是活的，
+   * 得在 builder 里直接读 state（v4.25 的坑），走不了 SetRow 的字符串参数。
+   */
+  @Builder
+  rowLocalData() {
+    Row({  space: S.space2Xl  }) {
       Column() {
-        Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+        SymbolGlyph(sym('folder'))
+          .fontSize(S.iconSize)
+          .fontColor([tkInk(this.pal, 'brandDeep')])
+      }
+      .width(32)
+      .height(32)
+      .borderRadius(S.radiusSm)
+      .backgroundColor(tk(this.pal, 'soft'))
+      .alignItems(HorizontalAlign.Center)
+      .justifyContent(FlexAlign.Center)
+      .flexShrink(0)
 
-        this.pageTop()
+      Column({  space: S.spaceXs  }) {
+        Text('本地数据')
+          .fontSize(S.cardTitleSize)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(tk(this.pal, 'text'))
+        this.localSummary()
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Center)
+    .constraintSize({ minHeight: this.rowMinH })
+    .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+  }
 
-        // page-head
-        Column({ space: 5 }) {
-          Text('SETTINGS · 偏好设置').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
-          Text('这里是你的工作台。')
-            .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
-          Text('所有数据都存在这台手机上，不联网、不上传。').fontSize(11).fontColor(tk(this.dark, 'textSub'))
+  @Builder
+  secData() {
+    Column() {
+      this.groupTitle('我的数据', true)
+      Column() {
+        this.rowLocalData()
+        this.rowDivider()
+        SetRow({
+          icon: 'doc',
+          title: '备份与恢复',
+          sub: '导出、恢复、换机带走',
+          arrow: true,
+          onTap: () => { this.openBackup(); }
+        })
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .backgroundColor(tk(this.pal, 'card'))
+      .borderRadius(S.radiusCard)
+      .border({ width: 1, color: tk(this.pal, 'cardBorder') })
+      .shadow(cardShadow(this.pal))
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  // ───────────────────── 分组二 · 偏好 ─────────────────────
+
+  @Builder
+  secPref() {
+    Column() {
+      this.groupTitle('偏好', false)
+      Column() {
+        SetRow({
+          icon: 'person',
+          title: '怎么称呼我',
+          sub: '会显示在首页问候语右上角'
+        })
+
+        this.rowDivider()
+
+        // 称呼输入框（单独一行：右侧固定宽度会把标题挤没）
+        Row({  space: S.spaceLg  }) {
+          TextInput({ placeholder: '你的名字', text: this.userName })
+            .fontSize(S.smallSize)
+            .layoutWeight(1)
+            .height(this.nameInputH)
+            .placeholderFont({ size: S.smallSize })
+            .placeholderColor(tk(this.pal, 'textHint'))
+            .fontColor(tk(this.pal, 'text'))
+            .caretColor(tk(this.pal, 'brand'))
+            .backgroundColor(tk(this.pal, 'card2'))
+            .borderRadius(S.radiusBtn)
+            .border({ width: 1, color: tk(this.pal, 'line') })
+            .padding({  left: S.space2Xl, right: S.space2Xl  })
+            .onChange((v: string) => { this.userName = v; })
+          this.miniPrimaryBtn('保存', () => { this.saveName(); })
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+        .padding({  left: this.rowIndent, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+
+        this.rowDivider()
+
+        SetRow({
+          icon: 'palette',
+          title: '外观',
+          sub: '五套配色，点一下就换',
+          arrow: true,
+          trailingKind: 1,
+          onTap: () => { this.openPalette(); }
+        })
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .backgroundColor(tk(this.pal, 'card'))
+      .borderRadius(S.radiusCard)
+      .border({ width: 1, color: tk(this.pal, 'cardBorder') })
+      .shadow(cardShadow(this.pal))
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  // ───────────────────── 分组三 · 关于 ─────────────────────
+
+  @Builder
+  secAbout() {
+    Column() {
+      this.groupTitle('关于', false)
+      Column() {
+        SetRow({
+          icon: 'bell',
+          title: '提醒清单',
+          sub: '在顶部铃铛里看 · 纯本地，不申请权限'
+        })
+
+        this.rowDivider()
+
+        SetRow({
+          icon: 'checkCircle',
+          title: '隐私与协议',
+          sub: '不联网 · 不收集个人信息',
+          arrow: true,
+          onTap: () => { this.onNavigate('policy'); }
+        })
+
+        this.rowDivider()
+
+        SetRow({
+          icon: 'grid',
+          title: '关于小记',
+          sub: '本机数据库',
+          trailingKind: 2,
+          trailingText: this.appVersion
+        })
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .backgroundColor(tk(this.pal, 'card'))
+      .borderRadius(S.radiusCard)
+      .border({ width: 1, color: tk(this.pal, 'cardBorder') })
+      .shadow(cardShadow(this.pal))
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  // ───────────────────── 分组四 · 危险操作 ─────────────────────
+
+  @Builder
+  secDanger() {
+    Column() {
+      this.groupTitle('危险操作', false)
+      Column() {
+        SetRow({
+          icon: 'trash',
+          title: '清空全部数据',
+          sub: '不可撤销',
+          trailingKind: 2,
+          trailingText: '清空',
+          trailingDanger: true,
+          onTap: () => { this.askClear(); }
+        })
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .backgroundColor(tk(this.pal, 'card'))
+      .borderRadius(S.radiusCard)
+      .border({ width: 1, color: tk(this.pal, 'cardBorder') })
+      .shadow(cardShadow(this.pal))
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  // ───────────────────── 抽屉 · 备份与恢复 ─────────────────────
+
+  @Builder
+  backupActions() {
+    Column({  space: S.spaceLg  }) {
+      SetRow({
+        icon: 'folder',
+        title: '导出为文件',
+        sub: '存成一个 json 文件，自己选地方存',
+        arrow: true,
+        onTap: () => { this.exportToFile(); }
+      })
+
+      SetRow({
+        icon: 'undo',
+        title: '从文件恢复',
+        sub: '选一个备份文件读回来',
+        arrow: true,
+        onTap: () => { this.restoreFromFile(); }
+      })
+
+      // 复制/粘贴点下去就直接做，不给箭头（箭头表示「会跳去另一个地方」）
+      SetRow({
+        icon: 'doc',
+        title: '复制备份',
+        sub: '复制到剪贴板，临时搬着用',
+        onTap: () => { this.exportBackup(); }
+      })
+
+      SetRow({
+        icon: 'checkCircle',
+        title: '粘贴恢复',
+        sub: '把备份内容贴进来',
+        onTap: () => { this.showPaste = !this.showPaste; }
+      })
+
+      // 粘贴恢复：把备份内容贴进来再恢复（不读剪贴板、不申请任何权限）
+      if (this.showPaste) {
+        Column({  space: S.spaceLg  }) {
+          TextArea({ placeholder: '把备份内容粘贴到这里', text: this.backupText })
+            .fontSize(S.labelSize)
+            .width('100%')
+            .height(this.pasteBoxH)
+            .placeholderFont({ size: S.labelSize })
+            .placeholderColor(tk(this.pal, 'textHint'))
+            .fontColor(tk(this.pal, 'text'))
+            .caretColor(tk(this.pal, 'brand'))
+            .backgroundColor(tk(this.pal, 'card2'))
+            .borderRadius(S.radiusBtn)
+            .border({ width: 1, color: tk(this.pal, 'line') })
+            .padding({  left: S.space2Xl, right: S.space2Xl, top: S.space2Xl, bottom: S.space2Xl  })
+            .onChange((v: string) => { this.backupText = v; })
+          Row({  space: S.spaceLg  }) {
+            this.textBtn('清空输入框', () => { this.backupText = ''; });
+            this.miniGhostBtn('用粘贴内容恢复', () => { this.askRestore(); });
+          }
+          .width('100%')
+          .justifyContent(FlexAlign.End)
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
-        .padding({ top: 14, bottom: 14 })
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
 
-        // 概览
-        Row({ space: 9 }) {
-          this.statBox('tasks', '任务', '件')
-          this.statBox('notes', '记录', '条')
-          this.statBox('reviews', '复盘', '篇')
+  // ───────────────────── 抽屉 · 外观 ─────────────────────
+
+  @Builder
+  paletteList() {
+    Column({  space: S.spaceSm  }) {
+      ForEach(PALETTES, (p: PaletteDef, i: number) => {
+        this.paletteRow(p, i);
+      }, (p: PaletteDef) => `pal-${p.key}-${this.pal}`)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  /** 一套配色（一行，点一下就换） */
+  @Builder
+  paletteRow(p: PaletteDef, i: number) {
+    Row({  space: S.space2Xl  }) {
+      Row()
+        .width(32)
+        .height(32)
+        .borderRadius(16)
+        .backgroundColor(p.map['brand'] ?? tk(this.pal, 'brand'))
+        .border({ width: this.pal === i ? 2 : 1,
+                  color: this.pal === i ? tk(this.pal, 'brandDeep') : tk(this.pal, 'line') })
+        .flexShrink(0)
+      Column({  space: S.spaceXs  }) {
+        Text(p.name)
+          .fontSize(S.cardTitleSize).fontWeight(FontWeight.Medium)
+          .fontColor(tk(this.pal, 'text'))
+        Text(p.desc)
+          .fontSize(S.labelSize).fontColor(tk(this.pal, 'textHint'))
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      if (this.pal === i) {
+        SymbolGlyph(sym('check'))
+          .fontSize(S.midSize).fontColor([tk(this.pal, 'brand')])
+          .flexShrink(0)
+      }
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Center)
+    .constraintSize({ minHeight: this.rowMinH })
+    .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceXl, bottom: S.spaceXl  })
+    .onClick(() => { this.pickPalette(i); this.showSheet = false; })
+  }
+
+  // ───────────────────── 抽屉外壳 ─────────────────────
+
+  @Builder
+  sheetContent() {
+    if (this.wideMode()) {
+      // 宽屏：居中白卡（遮罩由系统的 POPUP 弹窗画）
+      Column() {
+        this.sheetBody()
+      }
+      .width('86%')
+      .constraintSize({ maxWidth: 460, maxHeight: R.sheetMaxH() })
+      .backgroundColor(tk(this.pal, 'card'))
+      .borderRadius(S.radiusSheet)
+      .shadow(sheetShadow(this.pal))
+    } else {
+      // 窄屏：贴底抽屉
+      Column() {
+        this.sheetBody()
+      }
+      .width('100%')
+      .backgroundColor(tk(this.pal, 'card'))
+      .borderRadius(S.radiusSheet)
+    }
+  }
+
+  @Builder
+  sheetBody() {
+    Column({  space: S.spaceLg  }) {
+      Row() {
+        Text(this.sheetMode === 1 ? '备份与恢复' : '外观')
+          .fontSize(S.sectionSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text'))
+        Blank()
+        Column() {
+          SymbolGlyph(sym('close'))
+            .fontSize(S.iconSize).fontColor([tk(this.pal, 'textHint')])
         }
+        .width(40).height(40).borderRadius(20)
+        .backgroundColor(tk(this.pal, 'soft'))
+        .alignItems(HorizontalAlign.Center)
+        .justifyContent(FlexAlign.Center)
+        .onClick(() => { this.showSheet = false; })
+      }
+      .width('100%')
+      Text(this.sheetMode === 1 ? '导出、恢复、换机带走。' : '五套配色，点一下就换。')
+        .fontSize(S.labelSize).fontColor(tk(this.pal, 'textSub'))
         .width('100%')
-        .margin({ bottom: 12 })
+      if (this.sheetMode === 1) {
+        this.backupActions()
+      } else {
+        this.paletteList()
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding({  left: S.pagePad, right: S.pagePad, top: S.spaceXl, bottom: S.space2Xl  })
+  }
 
-        // 本地数据
-        Card({ title: '本地数据', sub: '都在这台手机里', bodyPadTop: 8 }) {
-          Column({ space: 8 }) {
-            Row() {
-              Row() {
-                SymbolGlyph(sym('checkCircle')).fontSize(13).fontColor([tc(this.dark, '#1F9E9A', 1)])
-              }
-              .width(30).height(30).borderRadius(10)
-              .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
-              .backgroundColor(tc(this.dark, '#E1F7F5', 0))
-              Column({ space: 2 }) {
-                Text('离线模式已开启').fontSize(11).fontColor(tk(this.dark, 'text'))
-                Text('不需要登录，不需要联网，打开就能用')
-                  .fontSize(9).fontColor(tc(this.dark, '#8FA2B3', 1))
-              }
-              .layoutWeight(1).alignItems(HorizontalAlign.Start)
-            }
-            .width('100%')
-            .alignItems(VerticalAlign.Center)
+  build() {
+    Stack() {
+      Scroll() {
+        Column() {
+          Text(`${this.tick}`).fontSize(S.hiddenSize).width(1).height(1).opacity(0)
 
-            Divider().color(tk(this.dark, 'line')).strokeWidth(1)
+          this.pageTop()
 
-            // 各类内容条数
-            Row() {
-              this.miniStat('tasks', '任务')
-              this.miniStat('events', '日程')
-              this.miniStat('notes', '记录')
-            }
-            .width('100%')
-            Row() {
-              this.miniStat('projects', '项目')
-              this.miniStat('reviews', '复盘')
-              this.miniStat('habits', '习惯')
-            }
-            .width('100%')
+          // page-head
+          Column({  space: S.spaceMd  }) {
+            Text('SETTINGS · 偏好设置').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint')).letterSpacing(1.6)
+            Text('偏好')
+              .fontSize(S.sectionSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text')).letterSpacing(-0.2)
+            Text('这台手机上的小记，全部设置都在这儿。').fontSize(S.labelSize).fontColor(tk(this.pal, 'textSub'))
           }
           .width('100%')
           .alignItems(HorizontalAlign.Start)
-        }
+          .padding({  top: S.spaceXl, bottom: S.space2Xl  })
 
-        // 备份与恢复
-        Column() {
-          Card({ title: '备份与恢复', sub: '换手机也不怕', bodyPadTop: 8 }) {
-            Column({ space: 8 }) {
-              Text('「存成文件」把全部内容写成一个 .json 文件，你自己选地方存 —— 存到网盘目录就顺带跨设备了，文件再大也不怕。「复制备份」是把内容放进剪贴板，方便临时搬一下。')
-                .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
-              Row({ space: 8 }) {
-                this.primaryBtn(this.busy ? '处理中…' : '存成文件', () => { this.exportToFile(); })
-                this.ghostBtn('复制备份', () => { this.exportBackup(); })
-              }
-              .width('100%')
-              Row({ space: 8 }) {
-                this.ghostBtn('从文件恢复', () => { this.restoreFromFile(); })
-                this.ghostBtn('清空输入框', () => { this.backupText = ''; })
-              }
-              .width('100%')
-              Text('恢复：点「从文件恢复」选一个备份文件；也可以把备份内容长按粘贴到下面这个框里，再点「恢复」。恢复会覆盖当前数据（点「恢复」后会再问一次），建议先备份一份现在的。备份格式不对时不会动你现在的数据。')
-                .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
-              TextArea({ placeholder: '把备份内容粘贴到这里', text: this.backupText })
-                .fontSize(11).width('100%')
-                .height(84)
-                .placeholderFont({ size: 11 })
-                .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-                .fontColor(tk(this.dark, 'text'))
-                .caretColor(tk(this.dark, 'brand'))
-                .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-                .border({ width: 1, color: tk(this.dark, 'line') })
-                .padding({ left: 11, right: 11, top: 8, bottom: 8 })
-                .onChange((v: string) => { this.backupText = v; })
-              Row({ space: 8 }) {
-                this.primaryBtn(this.busy ? '处理中…' : '恢复', () => { hilog.debug(0x0000, 'workbench', 'restore button tapped'); this.askRestore(); })
-              }
-              .width('100%')
-              Text('数据存在 App 自己的沙盒数据库里，卸载 App 会一起删除 —— 想留底就导出成文件。')
-                .fontSize(9).fontColor(tc(this.dark, '#C89A5B', 1)).lineHeight(16).width('100%')
-                .padding({ top: 6, bottom: 6, left: 10, right: 10 })
-                .backgroundColor(tc(this.dark, '#FFF8EC', 0)).borderRadius(9)
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-          }
-        }
-        .width('100%')
-        .margin({ top: 12 })
-
-        // 称呼
-        Column() {
-          Card({ title: '称呼', sub: '会显示在首页问候语右上角', bodyPadTop: 8 }) {
-            Column({ space: 8 }) {
-              this.fieldLabel('怎么称呼你（保存后，首页问候语右上角会出现这个小人图标和名字）')
-              TextInput({ placeholder: '你的名字', text: this.userName })
-                .fontSize(12).height(38).width('100%')
-                .placeholderFont({ size: 12 })
-                .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-                .fontColor(tk(this.dark, 'text'))
-                .caretColor(tk(this.dark, 'brand'))
-                .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-                .border({ width: 1, color: tk(this.dark, 'line') })
-                .padding({ left: 11, right: 11 })
-                .onChange((v: string) => { this.userName = v; })
-              Row() {
-                this.primaryBtn('保存名字', () => { this.saveName(); })
-              }
-              .width('100%')
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-          }
-        }
-        .width('100%')
-        .margin({ top: 12 })
-
-        // 提醒清单说明（v4.20：零权限 —— 只用 App 内的铃铛清单，不发系统通知）
-        Column() {
-          Card({ title: '提醒清单', sub: '在 App 顶部的铃铛里看', bodyPadTop: 8 }) {
-            Column({ space: 8 }) {
-              Text('App 顶部铃铛里会列出「已经逾期」「今天到期」「12 小时内要做」的事，随时点开就能看。')
-                .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
-              Text('这一版不申请任何系统权限，也不会发系统通知 —— 提醒只在 App 打开时自己出现在铃铛里。')
-                .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-          }
-        }
-        .width('100%')
-        .margin({ top: 12 })
-
-        // 危险操作
-        Column() {
-          Card({ title: '清空数据', sub: '不可撤销', bodyPadTop: 8 }) {
-            Column({ space: 8 }) {
-              Text('把手机上的所有内容一次性删掉，回到刚安装的状态。删掉就找不回来了，动手前请先复制备份。')
-                .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
-              Row() {
-                Text('清空全部数据')
-                  .fontSize(11.5).fontColor(tc(this.dark, '#D4705F', 1)).textAlign(TextAlign.Center)
-                  .width('100%').padding({ top: 9, bottom: 9 })
-                  .borderRadius(S.radiusBtn)
-                  .backgroundColor(tc(this.dark, '#FDF2EF', 0))
-                  .border({ width: 1, color: tc(this.dark, tc(this.dark, '#F8DCD7', 2), 2) })
-                  .onClick(() => { this.askClear(); })
-              }
-              .width('100%')
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-          }
-        }
-        .width('100%')
-        .margin({ top: 12 })
-
-        // v4.8 外观
-        Column() {
-          Card({ title: '外观', sub: '深色模式夜里看不刺眼', bodyPadTop: 8 }) {
-            Column({ space: 8 }) {
-              Row() {
-                Column({ space: 2 }) {
-                  Text('深色模式').fontSize(11.5).fontColor(tk(this.dark, 'text'))
-                  Text('切换后整个 App 的底色、文字、卡片都会跟着变')
-                    .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1))
+          // v5.17 宽屏两栏：分组并排（>1180vp 三列 / >820vp 两列），手机仍是单列。
+          if (this.gridCols() >= 2) {
+            GridRow({ columns: this.gridCols(), gutter: { x: S.gapLg, y: S.gapLg } }) {
+              GridCol({ span: this.spanFor(1) }) {
+                Column() {
+                  this.secData()
                 }
+                .width('100%')
                 .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-                Toggle({ type: ToggleType.Switch, isOn: this.dark })
-                  .selectedColor(tk(this.dark, 'brand'))
-                  .switchPointColor('#FFFFFF')
-                  .onChange((on: boolean) => { this.toggleDark(on); })
               }
-              .width('100%')
-              .alignItems(VerticalAlign.Center)
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-          }
-        }
-        .width('100%')
-        .margin({ top: 12 })
-
-        // 隐私与协议
-        Column() {
-          Card({ title: '隐私与协议', sub: '不联网 · 不收集个人信息', bodyPadTop: 8 }) {
-            Column({ space: 8 }) {
-              Text('本 App 不申请网络权限、不收集任何个人信息，所有内容只存在这台手机上。完整的《用户协议》和《隐私政策》都在 App 里，随时可以看。')
-                .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
-              Row() {
-                this.primaryBtn('查看用户协议与隐私政策', () => { this.onNavigate('policy'); })
+              GridCol({ span: this.spanFor(1) }) {
+                Column() {
+                  this.secPref()
+                }
+                .width('100%')
+                .alignItems(HorizontalAlign.Start)
               }
-              .width('100%')
+              GridCol({ span: this.spanFor(1) }) {
+                Column() {
+                  this.secAbout()
+                  this.secDanger()
+                }
+                .width('100%')
+                .alignItems(HorizontalAlign.Start)
+              }
             }
             .width('100%')
-            .alignItems(HorizontalAlign.Start)
+          } else {
+            this.secData()
+            this.secPref()
+            this.secAbout()
+            this.secDanger()
           }
+
+          Text(`离线版 · 数据存在本机 · ${this.appVersion} · ${D.mdWeek(D.key(new Date()))}`)
+            .fontSize(S.tinySize).fontColor(tk(this.pal, 'textPale')).textAlign(TextAlign.Center)
+            .width('100%').margin({  top: S.space2Xl, bottom: R.bottomPad()  })
         }
         .width('100%')
-        .margin({ top: 12 })
-
-        // 关于
-        Column() {
-          Card({ title: '关于', bodyPadTop: 8 }) {
-            Column({ space: 5 }) {
-              Text('小记 · 鸿蒙端').fontSize(11.5).fontColor(tk(this.dark, 'text')).width('100%')
-              Text('纯离线版：数据只存在这台手机上，不连服务器，也不需要账号。')
-                .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1)).lineHeight(17).width('100%')
-              Text(`本机数据库 · ${this.appVersion} · ${D.dotDate(new Date())}`)
-                .fontSize(9).fontColor(tc(this.dark, '#B7C7D4', 1)).width('100%')
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-          }
-        }
-        .width('100%')
-        .margin({ top: 12 })
-
-        Text(`离线版 · 数据存在本机 · ${this.appVersion} · ${D.dotDate(new Date())}`)
-          .fontSize(9).fontColor(tc(this.dark, '#C6D4E0', 1)).textAlign(TextAlign.Center)
-          .width('100%').margin({ top: 12, bottom: S.pageBottom })
+        .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop  })
+        .alignItems(HorizontalAlign.Start)
       }
+        // v5.16：滚动时把右下角悬浮按钮藏起来（它正好压在内容上），停了就回来
+        .onDidScroll((x: number, y: number) => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+        .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
+      .onScrollEdge(onEdgeScrolled)
+      .onWillScroll(onEdgeWillScroll)
+      .align(Alignment.TopStart)
       .width('100%')
-      .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
-      .alignItems(HorizontalAlign.Start)
+      .height('100%')
+      .scrollBar(BarState.Off)
+      .constraintSize({ maxWidth: 1240 })
+      // v5.0：页面底色改成透明，让 Index 根 Stack 上的大光斑透出来
+      .backgroundColor(Color.Transparent)
+      .edgeEffect(EdgeEffect.Spring)
     }
-    .onScrollEdge(onEdgeScrolled)
-    .onWillScroll(onEdgeWillScroll)
-    .align(Alignment.TopStart)
     .width('100%')
     .height('100%')
-    .scrollBar(BarState.Off)
-    .constraintSize({ maxWidth: 1240 })
-    .backgroundColor(tk(this.dark, 'bg'))
-    .edgeEffect(EdgeEffect.Spring)
+    // v5.20：备份 / 配色两个抽屉共用一个 bindSheet（同一个组件只能挂一个）
+    .bindSheet($$this.showSheet, this.sheetContent(), {
+      // v5.21：宽屏用系统的「居中弹窗」（CENTER）。
+      //   之前用 POPUP + height '100%'，实测面板高度是按内容算的（平板横屏也只有内容那么高），
+      //   结果卡片贴在屏幕顶部、垂直方向没居中 —— 平板上看着像一张掉下来的横幅。
+      //   CENTER + FIT_CONTENT 才是真正按内容居中。
+      height: SheetSize.FIT_CONTENT,
+      dragBar: !this.wideMode(),
+      showClose: false,
+      backgroundColor: Color.Transparent,
+      width: '100%',
+      preferType: this.wideMode() ? SheetType.CENTER : SheetType.BOTTOM
+    })
   }
 
-  /** 本地数据卡里的六格小计数（同样：数字在 builder 内部直接读） */
-  @Builder
-  miniStat(kind: string, label: string) {
-    Column({ space: 1 }) {
-      Text(kind === 'tasks' ? `${this.nTasks}` :
-        (kind === 'events' ? `${this.nEvents}` :
-          (kind === 'notes' ? `${this.nNotes}` :
-            (kind === 'projects' ? `${this.nProjects}` :
-              (kind === 'reviews' ? `${this.nReviews}` : `${this.nHabits}`)))))
-        .fontSize(15).fontWeight(FontWeight.Bold).fontColor(tc(this.dark, '#2E4A5E', 1))
-      Text(label).fontSize(9).fontColor(tc(this.dark, '#9FB2C2', 1))
-    }
-    .layoutWeight(1)
-    .alignItems(HorizontalAlign.Start)
-  }
 }

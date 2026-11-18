@@ -18,12 +18,13 @@
  *      写在组件内部只作用到它自己的根节点，结果整屏触摸被吞掉、整个 App 点不动。
  */
 
+import { S } from '../utils/Theme';
 import { EDGE_BOTTOM, EDGE_END, EDGE_SEQ_KEY, EDGE_SIDE_KEY, EDGE_START, EDGE_TEXT_KEY } from '../utils/EdgeHint';
 
 @Component
 export struct EdgeHint {
   /** 深色模式 */
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   /** 提示文字 */
   @StorageLink(EDGE_TEXT_KEY) @Watch('onHit') text: string = '';
   /** 触发的边（0 上 / 1 下 / 2 左 / 3 右） */
@@ -90,11 +91,11 @@ export struct EdgeHint {
     Stack({ alignContent: this.alignOf(this.side) }) {
       if (this.showPill) {
         Text(this.text)
-          .fontSize(12)
-          .fontColor(this.dark ? '#16202C' : '#FFFFFF')
-          .padding({ left: 14, right: 14, top: 8, bottom: 8 })
-          .borderRadius(999)
-          .backgroundColor(this.dark ? 'rgba(232,239,247,0.95)' : 'rgba(23,52,80,0.90)')
+          .fontSize(S.smallSize)
+          .fontColor('#FFFFFF')
+          .padding({  left: S.space3Xl, right: S.space3Xl, top: S.spaceLg, bottom: S.spaceLg  })
+          .borderRadius(S.radiusPill)
+          .backgroundColor('rgba(23,52,80,0.90)')
           .margin(this.marginOf(this.side))
           .opacity(this.pillOpacity)
       }

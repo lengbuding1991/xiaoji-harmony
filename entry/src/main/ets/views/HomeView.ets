@@ -2,26 +2,35 @@
 // 结构逐块对齐「个人工作台」components/Dashboard.tsx：hello → 5 个 KPI → 趋势 → 投入 → 最近任务
 // → 月历 → 核心模块 → 本周小结 → 灵感派 → 今日一句 → 本周安排（任务+日程，日历条可点）。
 // v2.9：底部「任务看板」整块已删（和任务面板重复，用户要求）。
-// v3.0：hello 下面加了一颗「全部内容」胶囊 → 跳 AllView（任务/灵感/日程/项目/复盘/习惯 一处看全）。
+// v3.0：hello 下面加了一颗「所有内容」胶囊 → 跳 AllView（任务/记录/日程/项目/复盘/习惯 一处看全）。
 // 手机上全部单列竖排（工作台在 <=820px 时 .home-grid 也是单列）。
-import { Store, isConsumedRepeat } from '../store/Store';
-import { areaColor, areaLabel, barBg, barColor, brandGradient, C, catBg, catColor, S, tc, tk, tkInk } from '../utils/Theme';
+import { Store, isConsumedRepeat, isOverdue, overdueDays } from '../store/Store';
+import { areaColor, areaLabel, barBg, barColor, brandGradient, catBg, catColor, misc, onFill, paletteAt, paletteList, S, tc, tk, tkInk } from '../utils/Theme';
 import { D } from '../utils/DateUtil';
 import { toast } from '../utils/Toast';
 import { Card } from '../components/Card';
-import { LineChart } from '../components/LineChart';
 import { Donut, DonutLegend, ringPiece, RingPiece } from '../components/Donut';
-import { Kpi, ModTile, SecHead, MonthCal, CalCell, calCell, MiniBars, WeekGantt, GanttBar, ganttBar } from '../components/Widgets';
+import { Kpi, SecHead, WeekGantt, GanttBar, ganttBar } from '../components/Widgets';
 import { R } from '../utils/Responsive';
 import { IconBox } from '../components/IconBox';
 import { sym } from '../components/Icon';
 import { Task, Note, TaskCreate, TaskStatus, EventItem, HabitView } from '../api/Types';
 import { StatusDot } from '../components/StatusDot';
 import { TopBar } from '../components/TopBar';
-import { display } from '@kit.ArkUI';
 import { TaskSheet } from '../components/TaskSheet';
 import { SheetFrame } from '../components/SheetFrame';
 import { onEdgeScrolled, onEdgeWillScroll } from '../utils/EdgeHint';
+
+/** v5.12：首页「接下来」卡里的一行（一条日程） */
+interface NextEvent {
+  id: number;
+  startAt: string;
+  dayKey: string;
+  isToday: boolean;
+  dayLabel: string;
+  timeLabel: string;
+  title: string;
+}
 
 interface InvestItem {
   area: string;
@@ -29,6 +38,21 @@ interface InvestItem {
   hex: string;
   v: number;
   pct: number;
+}
+
+/**
+ * v5.5：周明细里的一天。
+ * v5.4 是「每天最多 3 条标题」，结果同一天的数据在「整周」和「点开某天」两种
+ * 画法里长得不一样（一边标题、一边带时间），用户看着别扭。
+ * v5.5 改成：**整周只报数**（几条任务 / 几条日程），点开某天才看明细。
+ */
+interface WeekGroup {
+  idx: number;
+  label: string;
+  dateText: string;
+  taskCount: number;
+  eventCount: number;
+  isToday: boolean;
 }
 
 interface CandItem {
@@ -41,7 +65,7 @@ interface CandItem {
 @Component
 export struct HomeView {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @State tick: number = 0;
   @State tasks: Task[] = [];
   @State notes: Note[] = [];
@@ -52,6 +76,8 @@ export struct HomeView {
   /** 本周安排里选中的那天（-1 = 看整周） */
   @State dayPick: number = -1;
   @State loaded: boolean = false;
+  // v5.14：整库读取失败的原因（「读不出来」要和「本来没数据」分开说）
+  @State kLoadError: string = '';
   @State refreshing: boolean = false;
   @State showAdd: boolean = false;
   // v4.26（平板竖屏）：宽屏的弹层不再用 bindSheet。
@@ -85,7 +111,6 @@ export struct HomeView {
     }
   }
 
-  @State trendRange: number = 0;     // 0=本周 1=上周
   @State investRange: number = 0;    // 0=本周 1=本月
   @State weekOffset: number = 0;
   @State spin: number = 0;
@@ -93,7 +118,6 @@ export struct HomeView {
   @StorageLink('wb_layout') layoutMode: number = 0;
   // v4.6：内容区宽度（扣掉左侧导航后的实际宽度），决定 KPI 排几列
   @StorageLink('wb_content_w') contentW: number = 0;
-  @State calOffset: number = 0;      // 月历偏移（0=本月）
   // ── v4.2：派生数值预计算 ────────────────────────────────
   // ArkUI V1 只刷新「属性表达式里直接读过 state」的节点；
   // 方法调用里读 state（this.todayPct()）不算依赖 ⇒ 先算好写进 @State 再显示。
@@ -106,41 +130,55 @@ export struct HomeView {
   @State kOpenCount: number = 0;      // 未完成数
   @State kAllPct: number = 0;         // 总完成率（已完成 / 总任务）
   @State kPctSub: string = '';        // 完成率副文案
+  @State kPctSubShort: string = '';    // 完成率副文案（窄卡片用，短）
   @State kDueTodayOpen: number = 0;   // 今日到期且未完成（页头 N）
+  // v5.1：首页第一屏的主角 —— 今日清单
+  @State kTodayList: Task[] = [];      // 逾期 → 今天到期 → 往后的，最多 5 条
+  @State kTodayRest: number = 0;       // 今天要做的里没显示出来的件数
+  @State kSoonCount: number = 0;        // v5.13：到期日在今天之后、排期靠后的件数
+  @State kTodayDoneCount: number = 0;  // 今天完成的件数
+  @State undoTaskId: number = -1;      // 刚完成、可撤销的任务 id
+  @State kHasHabits: boolean = false;  // v5.1：有习惯才显示习惯相关的块
+  @State kAllEmpty: boolean = true;    // v5.1：整个库是空的 ⇒ 收起 KPI 区
   @State kHeaderTitle: string = '';   // 页头标题
   @State kHeaderSub: string = '';     // 页头副文案
   @State kHabitStreak: number = 0;    // 各习惯里最长的连续打卡天数
   @State kHabitPending: number = 0;   // 今天还没打卡的习惯数
   @State kHabitSub: string = '';
+  @State kHabitSubShort: string = '';   // 习惯副文案（窄卡片用，短）
   @State kHabitPct: number = 0;
   @State kHabitBest: number = 0;    // 历史最长连续打卡天数
   @State kDoneAll: number = 0;        // 累计完成
   @State kOpenAll: number = 0;        // 未完成总数
-  @State kFocusH: string = '0.0';     // 本周专注小时
-  @State kFocusPct: number = 0;
   @State kWeekDone: number = 0;       // 本周完成
-  @State kWeekPoints: number = 0;     // 本周积分
-  @State kPoints: number = 0;         // 成长积分（累计）
-  @State kPointsPct: number = 0;
-  @State kTrendValues: number[] = [];
-  @State kTrendLabels: string[] = [];
-  @State kTrendSum: string = '0.0';
+  // v5.12：首页下面两张卡换成「接下来」+「今天该打卡」
+  @State kNextEvents: NextEvent[] = [];   // 未来 7 天的日程（最多 4 条）
+  @State kNextMore: number = 0;            // 超出 4 条的还剩几条
+  @State kNextOverdue: number = 0;         // 已经逾期的任务数
+  @State kHabitRows: HabitView[] = [];     // 习惯行（最多 3 个）
+  @State kHabitDays: string[] = [];        // 最近 7 天（今天在最后）
+  @State kHabitToday: string = '';
+  @State kHabitPending2: number = 0;       // 今天还没打卡的习惯数
   @State kInvestItems: InvestItem[] = [];
   @State kInvestPieces: RingPiece[] = [];
   @State kInvestTotal: string = '0.0';
-  @State kCalCells: CalCell[] = [];
-  @State kCalLabel: string = '';
-  @State kCalDone: number = 0;
   @State kSummary: string = '';
   @State kQuote: string = '';
   @State kRecentCount: number = 0;
+  // v5.1：首页那张「随手记」卡可以就地展开最近记的几条，不用跳页
+  @State notesOpen: boolean = false;
   @State kCandItems: CandItem[] = [];
   @State kCandPieces: RingPiece[] = [];
   @State kCandCount: number = 0;
   @State kWeekArrCount: number = 0;
   @State kWeekDayNums: string[] = [];
+  // v5.4：按天分组的周明细（每天最多 3 条标题）
+  @State kWeekGroups: WeekGroup[] = [];
   @State kWeekBars: GanttBar[] = [];
   @State kWeekRange: string = '';
+  // v5.0：上次上报的滚动偏移（背景光斑视差，超过 10px 才上报）
+  private lastScrollY: number = 0;
+  private undoTimer: number = -1;
   @State kTodayIdx: number = 0;
   @State kUserName: string = '';       // 设置里的「称呼」
   // v4.4：下面这些以前是在 build() 里直接调方法拿的（weekEvents() / weekTasks() /
@@ -167,6 +205,7 @@ export struct HomeView {
     this.events = Store.I.events;
     this.habits = Store.I.habits;
     this.loaded = Store.I.loaded;
+    this.kLoadError = Store.I.loadError;
     this.recalc();
   }
 
@@ -180,17 +219,18 @@ export struct HomeView {
     //   长期任务（没写截止日期）也永远在分母里 —— 它没做完就一直欠着；
     //   写了截止日期又没做完的，照样算逾期（任务面板里标红）。
     // v4.12：总数也不含已消耗的重复原件（它已经不算一条真任务）
-    let consumed: number = 0;
-    for (const t of this.tasks) {
-      if (isConsumedRepeat(t)) { consumed += 1; }
-    }
-    this.kAllTasks = this.tasks.length - consumed;
+    // v5.15：总数与完成率改用 Store 的唯一实现（以前这一页自己算一遍、任务面板又算一遍）
+    this.kAllTasks = Store.I.totalTaskCount();
     this.kDoneCount = doneAll.length;
     this.kOpenCount = open.length;
-    this.kAllPct = this.kAllTasks > 0 ? Math.round(doneAll.length * 100 / this.kAllTasks) : 0;
+    this.kAllPct = Store.I.completedRate();
     this.kPctSub = this.kAllTasks === 0
       ? '还没有任务'
       : (this.kOpenCount > 0 ? `还剩 ${this.kOpenCount} 件没做完` : '全部做完了');
+    // v5.16：窄卡片（手机三列）用的短文案 —— 长文案放不下，会被截成省略号
+    this.kPctSubShort = this.kAllTasks === 0
+      ? '还没有任务'
+      : (this.kOpenCount > 0 ? `还剩 ${this.kOpenCount} 件` : '全部做完了');
 
     // 页头 N：今日到期且还没做完的件数
     const todayKey: string = D.key(new Date());
@@ -199,10 +239,49 @@ export struct HomeView {
       if (t.due_date !== null && D.dateOf(t.due_date) === todayKey) { dueOpen += 1; }
     }
     this.kDueTodayOpen = dueOpen;
-    this.kHeaderTitle = dueOpen > 0 ? `今天，先做 ${dueOpen} 件要紧事。` : '今天没有到期的事。';
-    this.kHeaderSub = dueOpen > 0
+
+    // ── v5.1：今日清单 ──
+    // 排序：逾期（最久的在前）→ 今天到期 → 往后的按到期时间；最多列 5 条。
+    const overdue: Task[] = [];
+    const dueToday: Task[] = [];
+    const soon: Task[] = [];
+    for (const t of open) {
+      if (t.due_date === null) { continue; }
+      if (isOverdue(t)) { overdue.push(t); continue; }
+      const dk: string = D.dateOf(t.due_date);
+      if (dk === todayKey) { dueToday.push(t); }
+      else { soon.push(t); }
+    }
+    overdue.sort(this.cmpDue);
+    dueToday.sort(this.cmpDue);
+    soon.sort(this.cmpDue);
+    // v5.13：口径修正。
+    //   以前 allToday = 逾期 + 今天到期 + 往后的全部（往后没有时间上限），
+    //   副标题拿这个集合去算「N 件事」⇒ 标题写「今天要做的」却报出所有带到期日的未完成任务
+    //   （今天只有 2 件事，首页写 17 件事）。
+    //   现在分成两堆：
+    //     kTodayList / kTodayRest = 逾期 + 今天到期   —— 这才是「今天要做的」
+    //     kSoonCount              = 到期日在今天之后的 —— 单独一行说「排在后面」
+    const todayItems: Task[] = overdue.concat(dueToday);
+    // v5.4：原来列 5 条。用户要「只显示 3 条，多的给一个『更多』跳任务列表」。
+    this.kTodayList = todayItems.slice(0, 3);
+    this.kTodayRest = Math.max(0, todayItems.length - 3);
+    this.kSoonCount = soon.length;
+    let doneToday: number = 0;
+    for (const t of this.tasks) {
+      if (t.status === 'done' && t.done_at !== null && D.dateOf(t.done_at) === todayKey) { doneToday += 1; }
+    }
+    this.kTodayDoneCount = doneToday;
+    this.kHasHabits = this.habits.length > 0;
+    this.kAllEmpty = this.tasks.length === 0 && this.notes.length === 0
+      && this.events.length === 0 && this.habits.length === 0;
+
+    // 页头 N：今天到期 + 已逾期（清单里已经装着逾期的，头部不能说「今天没有到期的事」）
+    const pendingCount: number = dueOpen + overdue.length;
+    this.kHeaderTitle = pendingCount > 0 ? `有 ${pendingCount} 件事要处理。` : '今天没有到期的事。';
+    this.kHeaderSub = pendingCount > 0
       ? '其余都是加分项，慢慢来。'
-      : '想记点什么，去「记录灵感」写一条。';
+      : '想记点什么，去「随手记」写一条。';
 
     // 习惯打卡：各习惯里当前连续天数的最大值（今天还没打卡不打断）；另外算历史最长
     let maxStreak: number = 0;
@@ -220,6 +299,11 @@ export struct HomeView {
       ? '还没有习惯'
       : ((pending === 0 ? '今天的习惯都打卡了' : `今天还有 ${pending} 个没打卡`)
         + (maxBest > 0 ? ` · 历史最长 ${maxBest} 天` : ''));
+    // v5.16：窄卡片用的短文案（「今天都打卡了」这句话在下面的「今天该打卡」卡里已经说过）
+    this.kHabitSubShort = this.habits.length === 0
+      ? '还没有习惯'
+      : (pending > 0 ? `还剩 ${pending} 个没打卡`
+        : (maxBest > 0 ? `历史最长 ${maxBest} 天` : '今天都打卡了'));
     this.kHabitBest = maxBest;
     this.kHabitPct = Math.min(100, Math.round(maxStreak / 7 * 100));
 
@@ -227,29 +311,8 @@ export struct HomeView {
     this.kOpenAll = open.length;
 
     this.kWeekDone = this.weekDone().length;
-    const fmin: number = this.focusMin();
-    this.kFocusH = (fmin / 60).toFixed(1);
-    // 目标：每天 2 小时 × 7 天 = 840 分钟
-    this.kFocusPct = Math.min(100, Math.round(fmin / 840 * 100));
     // v4.4：归档的记录不该再计分（Store.I.notes 是含归档的）
     this.kActiveNotes = this.activeNotes().length;
-    this.kPoints = doneAll.length * 10 + this.kActiveNotes * 2;
-    // 本周积分（进度条目标 30 分 / 周）
-    let wNotes: number = 0;
-    const wStart: string = D.weekStart();
-    for (const n of this.notes) {
-      if (n.archived === 1) { continue; }
-      if (n.updated_at !== null && D.dateOf(n.updated_at) >= wStart) { wNotes += 1; }
-    }
-    this.kWeekPoints = this.kWeekDone * 10 + wNotes * 2;
-    this.kPointsPct = Math.min(100, Math.round(this.kWeekPoints / 30 * 100));
-
-    const tv: number[] = this.trendValues();
-    this.kTrendValues = tv;
-    this.kTrendLabels = this.trendLabels();
-    let sum: number = 0;
-    for (const v of tv) { sum += v; }
-    this.kTrendSum = sum.toFixed(1);
 
     const inv: InvestItem[] = this.invest();
     this.kInvestItems = inv;
@@ -260,9 +323,49 @@ export struct HomeView {
     for (const i of inv) { tot += i.v; }
     this.kInvestTotal = tot.toFixed(1);
 
-    this.kCalCells = this.calCells();
-    this.kCalLabel = this.calLabel();
-    this.kCalDone = this.calDoneCount();
+
+    // ── v5.12：卡 A「接下来」—— 未来 7 天的日程 + 逾期提醒 ──
+    const todayK2: string = D.key(new Date());
+    let overdueN: number = 0;
+    for (const t of open) {
+      if (isOverdue(t)) { overdueN += 1; }
+    }
+    this.kNextOverdue = overdueN;
+    const win: string[] = [];
+    for (let i = 0; i < 7; i++) { win.push(D.addDays(todayK2, i)); }
+    const evs: NextEvent[] = [];
+    for (const e of this.events) {
+      if (e.start_at.length < 10) { continue; }
+      const dk: string = e.start_at.substring(0, 10);
+      if (win.indexOf(dk) < 0) { continue; }
+      evs.push({
+        id: e.id,
+        startAt: e.start_at,
+        dayKey: dk,
+        isToday: dk === todayK2,
+        dayLabel: this.dayTagOf(dk, todayK2),
+        timeLabel: e.all_day === 1 ? '全天' : D.hm(e.start_at),
+        title: e.title
+      });
+    }
+    evs.sort((a: NextEvent, b: NextEvent) => {
+      return a.startAt === b.startAt ? a.id - b.id : (a.startAt < b.startAt ? -1 : 1);
+    });
+    this.kNextMore = evs.length > 4 ? evs.length - 4 : 0;
+    this.kNextEvents = evs.length > 4 ? evs.slice(0, 4) : evs;
+
+    // ── v5.12：卡 B「今天该打卡」──
+    this.kHabitDays = D.lastDays(7);
+    this.kHabitToday = D.today();
+    const alive2: HabitView[] = [];
+    let pend2: number = 0;
+    for (const h of this.habits) {
+      if (h.archived !== 0) { continue; }
+      alive2.push(h);
+      if (!h.doneToday) { pend2 += 1; }
+    }
+    this.kHabitRows = alive2.length > 3 ? alive2.slice(0, 3) : alive2;
+    this.kHabitPending2 = pend2;
     this.kSummary = this.summaryText();
 
     const q: Note | null = this.quoteNote();
@@ -287,6 +390,7 @@ export struct HomeView {
     this.kDayEvents = this.dayPick >= 0 ? this.dayEventsAt(this.dayPick) : [];
     this.kWeekDayNums = this.weekDayNums();
     this.kWeekBars = this.weekBars();
+    this.kWeekGroups = this.weekGroups();
     this.kWeekRange = this.weekRangeLabel();
     this.kTodayIdx = this.todayIdxInWeek();
     this.kUserName = Store.I.settings.user_name;
@@ -308,42 +412,8 @@ export struct HomeView {
   }
 
   private doneTasks(): Task[] {
-    // v4.12：重复任务做完的「原件」不计入统计
-    return this.tasks.filter((t: Task) => t.status === 'done' && !isConsumedRepeat(t));
-  }
-
-  /** v4.5：趋势图的末点气泡正好落在右下角悬浮按钮下面 → 把图表位置报上去，让按钮自己让开 */
-  private chartArea(oldA: Area, newA: Area): void {
-    const x: number = this.numOf(newA.globalPosition.x);
-    const y: number = this.numOf(newA.globalPosition.y);
-    const w: number = this.numOf(newA.width);
-    const h: number = this.numOf(newA.height);
-    let sw: number = 360;
-    let sh: number = 780;
-    try {
-      const d = display.getDefaultDisplaySync();
-      sw = this.getUIContext().px2vp(d.width);
-      sh = this.getUIContext().px2vp(d.height);
-    } catch (e) {
-      sw = 360; sh = 780;
-    }
-    // 悬浮按钮的矩形（vp）：右下角，距右边 16、下边距 68、直径 42
-    const fx1: number = sw - 58; const fx2: number = sw - 16;
-    const fy1: number = sh - 110; const fy2: number = sh - 68;
-    // 末点气泡的真实位置（LineChart 报来的画布坐标 + 画布在窗口里的位置）
-    const bl: number[] = this.bubbleLocal;
-    const bx1: number = x + bl[0]; const bx2: number = bx1 + bl[2];
-    const by1: number = y + bl[1]; const by2: number = by1 + bl[3];
-    const hit: boolean = bl[2] > 0 && !(bx2 < fx1 || bx1 > fx2 || by2 < fy1 || by1 > fy2);
-    AppStorage.setOrCreate<boolean>('wb_fab_hide', hit);
-  }
-
-  private bubbleLocal: number[] = [0, 0, 0, 0];   // 末点气泡在画布里的位置（vp）
-
-  private numOf(v: Length | undefined): number {
-    if (v === undefined) { return 0; }
-    if (typeof v === 'string') { return 0; }
-    return v as number;
+    // v5.15：口径交给 Store 的唯一实现（v4.12：重复任务做完的「原件」不计入统计）
+    return Store.I.doneTaskList();
   }
 
   /** 上周完成的件数（用来跟本周比） */
@@ -381,36 +451,6 @@ export struct HomeView {
     return out;
   }
 
-  /** 7 天专注小时（按 done_at 的 estimate_min 求和） */
-  private trendValues(): number[] {
-    const end: Date = this.trendRange === 1 ? D.dateAdd(new Date(), -7) : new Date();
-    const out: number[] = [];
-    for (let i = 0; i < 7; i++) {
-      const d = D.dateAdd(end, -(6 - i));
-      let mins = 0;
-      for (const t of this.doneTasks()) {
-        if (t.done_at !== null && D.sameDay(t.done_at, d)) {
-          if (t.estimate_min !== null) { mins += t.estimate_min; }
-        }
-      }
-      out.push(Math.round(mins / 60 * 10) / 10);
-    }
-    return out;
-  }
-
-  private trendLabels(): string[] {
-    const end: Date = this.trendRange === 1 ? D.dateAdd(new Date(), -7) : new Date();
-    const out: string[] = [];
-    for (let i = 0; i < 7; i++) { out.push(D.slashMd(D.dateAdd(end, -(6 - i)))); }
-    return out;
-  }
-
-  private trendSum(): string {
-    let s = 0;
-    for (const v of this.trendValues()) { s += v; }
-    return s.toFixed(1);
-  }
-
   /** 本周已排期任务 */
   private weekTasks(): Task[] {
     const ws: Date = D.dateAdd(D.parse(D.weekStart()), this.weekOffset * 7);
@@ -420,6 +460,42 @@ export struct HomeView {
       const s = D.parse(t.scheduled_start);
       return s.getTime() >= ws.getTime() && s.getTime() < we.getTime();
     });
+  }
+
+  /** v5.5：按天统计（只报数，不列标题 —— 明细留给「点开某天」） */
+  private weekGroups(): WeekGroup[] {
+    const ws: Date = D.dateAdd(D.parse(D.weekStart()), this.weekOffset * 7);
+    const tCount: number[] = [0, 0, 0, 0, 0, 0, 0];
+    const eCount: number[] = [0, 0, 0, 0, 0, 0, 0];
+    const bump = (arr: number[], when: string): void => {
+      const idx: number = D.diffDays(D.parse(when), ws);
+      if (idx < 0 || idx > 6) { return; }
+      arr[idx] = arr[idx] + 1;
+    };
+    for (const t of this.weekTasks()) { bump(tCount, t.scheduled_start as string); }
+    for (const e of this.weekEvents()) { bump(eCount, e.start_at); }
+    const names: string[] = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const out: WeekGroup[] = [];
+    for (let i = 0; i < 7; i++) {
+      if (tCount[i] === 0 && eCount[i] === 0) { continue; }
+      out.push({
+        idx: i,
+        label: names[i],
+        dateText: D.md(D.key(D.dateAdd(ws, i))),
+        taskCount: tCount[i],
+        eventCount: eCount[i],
+        isToday: i === this.todayIdxInWeek()
+      });
+    }
+    return out;
+  }
+
+  /** v5.5/v5.15：某天的条数怎么写（3 件任务 / 2 个日程 / 3 件任务 · 1 个日程）
+   *  v5.15：单位按内容类型定 —— 任务「件」、日程「个」。 */
+  private groupCountText(g: WeekGroup): string {
+    if (g.eventCount === 0) { return `${g.taskCount} 件任务`; }
+    if (g.taskCount === 0) { return `${g.eventCount} 个日程`; }
+    return `${g.taskCount} 件任务 · ${g.eventCount} 个日程`;
   }
 
   private weekBars(): GanttBar[] {
@@ -432,7 +508,10 @@ export struct HomeView {
       let ei = D.diffDays(e, ws);
       si = Math.max(0, Math.min(6, si));
       ei = Math.max(si, Math.min(6, ei));
-      out.push(ganttBar(t.title, si, ei, barBg(this.dark, t.area), barColor(this.dark, t.area), `${t.id}`));
+      // v5.4：只画**跨天**的事。同一天的多件事各画一条只有 1/7 宽、标题必被截断，
+      // 渲染出来是一堆看不懂的小药丸 ⇒ 同天的交给下面的「按天分组」列表。
+      if (ei <= si) { continue; }
+      out.push(ganttBar(t.title, si, ei, barBg(this.pal, t.area), barColor(this.pal, t.area), `${t.id}`));
     }
     // v4.4：日程也画进甘特条。卡片上写「N 件安排」是任务 + 日程，
     // 甘特条只画任务的话，两边对不上（而且点某天看到的日程在条上找不到）。
@@ -443,7 +522,8 @@ export struct HomeView {
       let ei = D.diffDays(en, ws);
       si = Math.max(0, Math.min(6, si));
       ei = Math.max(si, Math.min(6, ei));
-      out.push(ganttBar(e.title, si, ei, '#F2ECFF', '#704DD2', `e${e.id}`));
+      if (ei <= si) { continue; }   // v5.4：同上，同天的日程不画条
+      out.push(ganttBar(e.title, si, ei, misc(this.pal, 'ganttBg', '#F2ECFF'), misc(this.pal, 'ganttFg', '#704DD2'), `e${e.id}`));
     }
     // 按开始时间升序 —— 以前不排序，甘特条上的条是乱的
     for (let i = 0; i < out.length; i++) {
@@ -465,7 +545,7 @@ export struct HomeView {
 
   private weekRangeLabel(): string {
     const ws: Date = D.dateAdd(D.parse(D.weekStart()), this.weekOffset * 7);
-    return `${D.dotMd(ws)} – ${D.dotMd(D.dateAdd(ws, 6))}`;
+    return `${D.md(D.key(ws))} – ${D.md(D.key(D.dateAdd(ws, 6)))}`;
   }
 
   private todayIdxInWeek(): number {
@@ -520,7 +600,7 @@ export struct HomeView {
       out.push({
         area: areas[i],
         label: areaLabel(areas[i]),
-        hex: areaColor(this.dark, areas[i]),
+        hex: areaColor(this.pal, areas[i]),
         v: vals[i],
         pct: Math.round(vals[i] / total * 100)
       });
@@ -541,7 +621,7 @@ export struct HomeView {
   }
 
   /**
-   * 灵感派（v2.8 改成显示「记录灵感」里的内容，不再是待办任务）。
+   * 灵感派（v2.8 改成显示「随手记」里的内容，不再是待办任务）。
    * 打分规则：置顶 +3、正文够长 +1、有标签 +1、今天/昨天刚记的 +2、最近一周记的 +1。
    */
   private candidates(): CandItem[] {
@@ -578,7 +658,7 @@ export struct HomeView {
     let sum = 0;
     for (let i = 0; i < n; i++) { sum += scores[i]; }
     if (sum === 0) { sum = 1; }
-    const palette: string[] = ['#12706B', '#1A6499', '#6650C8', '#A54A1E', '#8A5A0F'];
+    const palette: string[] = paletteList(this.pal, 'spark5');
     const out: CandItem[] = [];
     // spin 用来「换一批」：整体轮转起始位置
     for (let k = 0; k < n; k++) {
@@ -594,6 +674,44 @@ export struct HomeView {
   }
 
   /** 记录没起标题时，用正文前 14 个字顶上 */
+  /** v5.1：展开后的一行 —— 时间 + 标题 */
+  @Builder
+  noteLine(n: Note) {
+    Row({  space: S.spaceLg  }) {
+      Text(n.updated_at !== null && n.updated_at.length >= 10
+        ? n.updated_at.substring(5, 10).replace('-', '/')
+        : '')
+        .fontSize(S.microSize)
+        .fontColor(tc(this.pal, '#8FA2B3', 1))
+      Text(this.noteTitle(n))
+        .fontSize(S.bodySize)
+        .fontColor(tk(this.pal, 'text'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .padding({  top: S.spaceMd, bottom: S.spaceMd  })
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => { this.onNavigate('notes'); })
+  }
+
+  /** v5.1：最近记的几条（按更新时间倒序，最多 6 条） */
+  private recentNotes(): Note[] {
+    const arr: Note[] = this.notes.filter((n: Note) => n.archived !== 1);
+    for (let i = 0; i < arr.length; i++) {
+      for (let j = i + 1; j < arr.length; j++) {
+        const a: string = arr[i].updated_at !== null ? arr[i].updated_at : '';
+        const b: string = arr[j].updated_at !== null ? arr[j].updated_at : '';
+        if (b > a) {
+          const tmp: Note = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+        }
+      }
+    }
+    const n: number = Math.min(6, arr.length);
+    return arr.slice(0, n);
+  }
+
   private noteTitle(n: Note): string {
     if (n.title !== null && n.title.trim().length > 0) { return n.title.trim(); }
     const body: string = n.content !== null ? n.content.trim() : '';
@@ -631,51 +749,6 @@ export struct HomeView {
       }
     }
     return list.slice(0, 5);
-  }
-
-  /** 月历格子 */
-  private calCells(): CalCell[] {
-    const base = new Date(new Date().getFullYear(), new Date().getMonth() + this.calOffset, 1);
-    const y = base.getFullYear();
-    const m = base.getMonth() + 1;
-    const grid = D.monthGrid(y, m);
-    const today = new Date();
-    const out: CalCell[] = [];
-    for (const n of grid) {
-      if (n === 0) {
-        out.push(calCell(0, true, false, false, 0, 0));
-        continue;
-      }
-      const d = new Date(y, m - 1, n);
-      const isToday = D.diffDays(d, today) === 0;
-      let has = false;
-      let total = 0;
-      let done = 0;
-      for (const t of this.tasks) {
-        let onDay = false;
-        if (t.due_date !== null && D.sameDay(t.due_date, d)) { onDay = true; }
-        if (t.scheduled_start !== null && D.sameDay(t.scheduled_start, d)) { onDay = true; }
-        if (onDay) { has = true; total += 1; }
-        // 当天完成的：按完成时间落在这一天算（v4.12：已消耗的重复原件不算）
-        if (t.status === 'done' && !isConsumedRepeat(t) && t.done_at !== null && D.sameDay(t.done_at, d)) { done += 1; }
-      }
-      out.push(calCell(n, false, has, isToday, done, total));
-    }
-    return out;
-  }
-
-  /** 本周完成了几项（当前显示的那个月） */
-  private calDoneCount(): number {
-    const base = new Date(new Date().getFullYear(), new Date().getMonth() + this.calOffset, 1);
-    const y = base.getFullYear();
-    const m = base.getMonth() + 1;
-    let n = 0;
-    for (const t of this.doneTasks()) {
-      if (t.done_at === null || t.done_at.length < 10) { continue; }
-      const d = D.parse(t.done_at);
-      if (d.getFullYear() === y && d.getMonth() + 1 === m) { n += 1; }
-    }
-    return n;
   }
 
   /** 本周日程（event）——日历安排里的那些 */
@@ -740,9 +813,26 @@ export struct HomeView {
     return `${d.getMonth() + 1} 月 ${d.getDate()} 日 · ${wd}`;
   }
 
-  private calLabel(): string {
-    const d = new Date(new Date().getFullYear(), new Date().getMonth() + this.calOffset, 1);
-    return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
+  /** v5.12：日期标签 —— 今天 / 明天 / 后天 / 11月20日 */
+  private dayTagOf(dk: string, todayK: string): string {
+    if (dk === todayK) { return '今天'; }
+    if (dk === D.addDays(todayK, 1)) { return '明天'; }
+    if (dk === D.addDays(todayK, 2)) { return '后天'; }
+    return D.md(dk);
+  }
+
+  /** v5.12：这个习惯这天打卡了没 */
+  private habitLogged(h: HabitView, day: string): boolean {
+    return h.logs.indexOf(day) >= 0;
+  }
+
+  /** v5.12：点一下打卡 / 取消今天的打卡（打完 Store 会 notify ⇒ 首页立刻刷新） */
+  private async checkHabit(h: HabitView): Promise<void> {
+    const ok: boolean = await Store.I.toggleHabit(h.id, this.kHabitToday);
+    if (!ok) {
+      const msg: string = Store.I.lastError.length > 0 ? Store.I.lastError : '没打卡成功，再试一次';
+      toast(this.getUIContext(), msg);
+    }
   }
 
   private summaryText(): string {
@@ -767,10 +857,14 @@ export struct HomeView {
   private cycleStatus(t: Task): void {
     const next: TaskStatus = t.status === 'todo' ? 'doing' : (t.status === 'doing' ? 'done' : 'todo');
     const label: string = next === 'done' ? '完成了' : (next === 'doing' ? '开始做了' : '退回待办了');
-    Store.I.setTaskStatus(t.id, next).catch(() => {
-      toast(this.getUIContext(), '状态没改成，检查网络再试');
+    // v5.14：等写库结果出来再播报（原来先弹成功、再默默失败）。
+    Store.I.setTaskStatus(t.id, next).then((ok: boolean) => {
+      if (ok) {
+        toast(this.getUIContext(), `「${t.title}」${label}`);
+      } else {
+        toast(this.getUIContext(), '状态没改成，再试一次');
+      }
     });
-    toast(this.getUIContext(), `「${t.title}」${label}`);
   }
 
   private async doRefresh(): Promise<void> {
@@ -778,13 +872,73 @@ export struct HomeView {
     this.refreshing = false;
   }
 
+  /** v5.1：按到期时间排序（逾期最久的排最前） */
+  private cmpDue(a: Task, b: Task): number {
+    const x: string = D.dateOf(a.due_date);
+    const y: string = D.dateOf(b.due_date);
+    if (x < y) { return -1; }
+    if (x > y) { return 1; }
+    return 0;
+  }
+
+  /** v5.1：今日清单里点圆圈 ⇒ 直接完成，并给一次撤销的机会 */
+  private completeTask(t: Task): void {
+    if (t.status === 'done') { return; }
+    // v5.14：撤销条只在**真的写进库了**之后才出现。
+    //   原来不管成没成都弹「已完成 + 撤销」，写失败时用户一点撤销还会再失败一次。
+    Store.I.setTaskStatus(t.id, 'done').then((ok: boolean) => {
+      if (!ok) {
+        toast(this.getUIContext(), '没改成，再试一次');
+        return;
+      }
+      this.undoTaskId = t.id;
+      if (this.undoTimer > 0) { clearTimeout(this.undoTimer); }
+      this.undoTimer = setTimeout(() => { this.undoTaskId = -1; }, 5000);
+    });
+  }
+
+  /** v5.1：撤销刚才那一下（把它退回待办） */
+  private undoComplete(): void {
+    const id: number = this.undoTaskId;
+    if (id < 0) { return; }
+    this.undoTaskId = -1;
+    if (this.undoTimer > 0) { clearTimeout(this.undoTimer); this.undoTimer = -1; }
+    // v5.14：撤销失败也要说一声（原来是静默的）。
+    Store.I.setTaskStatus(id, 'todo').then((ok: boolean) => {
+      if (!ok) { toast(this.getUIContext(), '撤销没成功，再试一次'); }
+    });
+  }
+
+  /** v5.1：今日清单一行右边的时间/逾期标记 */
+  private todayWhen(t: Task): string {
+    if (t.due_date === null) { return ''; }
+    const dk: string = D.dateOf(t.due_date);
+    const todayK: string = D.key(new Date());
+    if (isOverdue(t)) {
+      return `已逾期 ${overdueDays(t)} 天`;
+    }
+    if (dk === todayK) { return '今天'; }
+    return dk.substring(5).replace('-', '/');
+  }
+
+  /** v5.1：逾期用红、今天用主色、以后用浅灰 */
+  private todayWhenColor(t: Task): string {
+    if (t.due_date === null) { return tk(this.pal, 'textHint'); }
+    const dk: string = D.dateOf(t.due_date);
+    const todayK: string = D.key(new Date());
+    if (isOverdue(t)) { return tc(this.pal, '#D2795C', 1); }
+    if (dk === todayK) { return tkInk(this.pal, 'brandDeep'); }
+    return tk(this.pal, 'textHint');
+  }
+
   // ── 小部件 ──
   /** 首页一行两块的排列方向：3 列时横排，1/2 列时竖排（手机外观不变） */
   /** v4.6 宽屏网格：列数 >= 3 时按网页端 .home-grid 的 2:1 跨度 + 14vp 真实间隙排 */
   /** v4.6：宽屏首页网格 —— 照网页端 .home-grid（3 列 + 14vp 间距 + 同行等高） */
   // 宽屏同行等高：各卡上报内容高度 → 取同行最大值 → 回填该行卡片的固定高度
-  @State contentH: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
-  @State rowH: number[] = [0, 0, 0, 0];
+  // v5.1：网格里只剩 3 张卡 —— ① 本周成长趋势 ② 本月成长日历（同一行） ③ 随手记（自己一行）
+  @State contentH: number[] = [0, 0, 0];
+  @State rowH: number[] = [0, 0];
 
   private setContentH(idx: number, h: number): void {
     if (!this.gridWide()) {
@@ -796,14 +950,9 @@ export struct HomeView {
     }
     arr[idx] = h;
     this.contentH = arr;
-    const rows: number[] = [0, 0, 0, 0];
-    for (let i = 0; i < 8; i++) {
-      const r: number = Math.floor(i / 2);
-      if (arr[i] > rows[r]) {
-        rows[r] = arr[i];
-      }
-    }
-    this.rowH = [rows[0] + 2, rows[1] + 2, rows[2] + 2, rows[3] + 2];
+    const r0: number = Math.max(arr[0], arr[1]);
+    const r1: number = arr[2];
+    this.rowH = [r0 + 2, r1 + 2];
   }
 
   private gridCols(): number {
@@ -822,6 +971,10 @@ export struct HomeView {
    */
   private spanFor(weight: number): number {
     const c: number = R.cols();
+    // v5.1：weight=3 表示「独占整行」
+    if (weight >= 3 && c >= 2) {
+      return c;
+    }
     if (weight >= 2 && c >= 3) {
       return 2;
     }
@@ -845,14 +998,14 @@ export struct HomeView {
 
   /** 3 列时同一行的两块拉齐高度；其余模式保持各自高度 */
   @Builder skeletonBlock(w: string, h: number) {
-    Row().width(w).height(h).backgroundColor(tc(this.dark, '#EAF2FA', 0)).borderRadius(13)
+    Row().width(w).height(h).backgroundColor(tc(this.pal, '#EAF2FA', 0)).borderRadius(S.radiusInner)
   }
 
   @Builder skeleton() {
-    Column({ space: 12 }) {
-      Row().width('60%').height(24).backgroundColor(tc(this.dark, '#E3EDF7', 0)).borderRadius(10)
-      Row().width('45%').height(13).backgroundColor(tc(this.dark, '#EAF2FA', 0)).borderRadius(8)
-      Row({ space: 8 }) {
+    Column({  space: S.space2Xl  }) {
+      Row().width('60%').height(24).backgroundColor(tc(this.pal, '#E3EDF7', 0)).borderRadius(S.radiusBtn)
+      Row().width('45%').height(13).backgroundColor(tc(this.pal, '#EAF2FA', 0)).borderRadius(S.radiusSm)
+      Row({  space: S.spaceLg  }) {
         this.skeletonBlock('48%', 78)
         this.skeletonBlock('48%', 78)
       }.width('100%')
@@ -861,13 +1014,13 @@ export struct HomeView {
       this.skeletonBlock('100%', 120)
     }
     .width('100%')
-    .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+    .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop  })
     .alignItems(HorizontalAlign.Start)
   }
 
   /** .task-row 的一行 */
   @Builder taskRow(t: Task) {
-    Row({ space: 10 }) {
+    Row({  space: S.spaceXl  }) {
       StatusDot({
         status: t.status,
         dotSize: 20,
@@ -875,15 +1028,15 @@ export struct HomeView {
       })
 
       Text(areaLabel(t.area))
-        .fontSize(8.5)
-        .fontColor(catColor(this.dark, t.area))
-        .padding({ left: 7, right: 7, top: 2, bottom: 2 })
-        .borderRadius(6)
-        .backgroundColor(catBg(this.dark, t.area))
+        .fontSize(S.microSize)
+        .fontColor(catColor(this.pal, t.area))
+        .padding({  left: S.spaceLg, right: S.spaceLg, top: S.spaceXs, bottom: S.spaceXs  })
+        .borderRadius(S.radiusSm)
+        .backgroundColor(catBg(this.pal, t.area))
 
       Text(t.title)
         .fontSize(S.bodySize)
-        .fontColor(t.status === 'done' ? tc(this.dark, '#A3B3C1', 1) : tk(this.dark, 'text'))
+        .fontColor(t.status === 'done' ? tc(this.pal, '#A3B3C1', 1) : tk(this.pal, 'text'))
         .decoration({ type: t.status === 'done' ? TextDecorationType.LineThrough : TextDecorationType.None, color: '#A3B3C1' })
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -891,16 +1044,16 @@ export struct HomeView {
 
       Text(this.taskMeta(t))
         .fontSize(S.tinySize)
-        .fontColor(tc(this.dark, '#A2B3C2', 1))
+        .fontColor(tc(this.pal, '#A2B3C2', 1))
         .maxLines(1)
         .flexShrink(0)
 
       // v4.23：fs14 墨迹 11.7x10.6vp（盒子 14x14 >= 12vp、墨迹 >= 8vp）
-      SymbolGlyph(sym('right')).fontSize(14).fontColor([tc(this.dark, '#C2D0DB', 1)])
+      SymbolGlyph(sym('right')).fontSize(S.cardTitleSize).fontColor([tc(this.pal, '#C2D0DB', 1)])
     }
     .width('100%')
-    .padding({ left: 8, right: 6, top: 10, bottom: 10 })
-    .borderRadius(11)
+    .padding({  left: S.spaceLg, right: S.spaceMd, top: S.spaceXl, bottom: S.spaceXl  })
+    .borderRadius(S.radiusBtn)
     .alignItems(VerticalAlign.Center)
     .onClick(() => { this.onNavigate('tasks'); })
   }
@@ -913,23 +1066,90 @@ export struct HomeView {
   }
 
   /** 一条日程 */
+  /** v5.1：今日清单的一行 —— 点圆圈直接完成 */
+  @Builder todayRow(t: Task) {
+    Row({  space: S.spaceXl  }) {
+      // v5.6：这里原来自己画了一个圈，只有「已完成」和「其它」两种样子 ——
+      // 任务在下面那张卡里被标成「进行中」（琥珀色）时，上面这里还是白圈，看着像没同步。
+      // 现在直接用 StatusDot：待办=白空心圈 / 进行中=琥珀半色 / 已完成=薄荷绿实心。
+      // 已完成的任务本来就被 openTasks() 过滤掉了，所以只有标绿才会从这里消失。
+      StatusDot({
+        status: t.status,
+        dotSize: 20,
+        onTap: () => { this.completeTask(t); }
+      })
+
+      Column({  space: S.spaceXs  }) {
+        Text(t.title)
+          .fontSize(S.bodySize)
+          .fontColor(t.status === 'done' ? tk(this.pal, 'textFaint') : tk(this.pal, 'text'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .onClick(() => { this.onNavigate('tasks'); })
+        Text(this.todayWhen(t))
+          .fontSize(S.microSize)
+          .fontColor(this.todayWhenColor(t))
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .padding({  top: S.spaceLg, bottom: S.spaceLg  })
+    .alignItems(VerticalAlign.Center)
+  }
+
+  /** v5.1：三个小入口块 —— 原来那个「核心模块」八宫格太满，只留最常用的三个 */
+  @Builder entryTiles() {
+    Row({  space: S.spaceLg  }) {
+      this.entryTile('flame', '习惯打卡', '连续打卡', paletteAt(this.pal, 'entryBg', 0), paletteAt(this.pal, 'entryFg', 0), () => { this.onNavigate('habits'); })
+      this.entryTile('target', '我的项目', '进度与截止', paletteAt(this.pal, 'entryBg', 1), paletteAt(this.pal, 'entryFg', 1), () => { this.onNavigate('projects'); })
+      this.entryTile('note', '复盘笔记', '每天三分钟', paletteAt(this.pal, 'entryBg', 2), paletteAt(this.pal, 'entryFg', 2), () => { this.onNavigate('review'); })
+    }
+    .width('100%')
+    .margin({  bottom: S.space3Xl  })
+  }
+
+  @Builder entryTile(icon: string, label: string, sub: string, bg: string, fg: string, cb: () => void) {
+    Column({  space: S.spaceMd  }) {
+      IconBox({ name: icon, boxSize: 30, iconSize: 15, radius: 10, bg: bg, fg: fg })
+      Text(label)
+        .fontSize(S.labelSize)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(tk(this.pal, 'text'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      Text(sub)
+        .fontSize(S.microSize)
+        .fontColor(tk(this.pal, 'textHint'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .layoutWeight(1)
+    .alignItems(HorizontalAlign.Center)
+    .padding({  top: S.space2Xl, bottom: S.space2Xl  })
+    .borderRadius(S.radiusInner)
+    .backgroundColor(tk(this.pal, 'card'))
+    .border({ width: 1, color: tk(this.pal, 'cardBorder') })
+    .onClick(cb)
+  }
+
   @Builder eventRow(e: EventItem) {
-    Row({ space: 8 }) {
-      Row().width(3).height(22).borderRadius(2).backgroundColor(tk(this.dark, 'event'))
+    Row({  space: S.spaceLg  }) {
+      Row().width(3).height(22).borderRadius(S.radiusDot).backgroundColor(tk(this.pal, 'event'))
       Text(e.all_day === 1 ? '全天' : D.hm(e.start_at))
-        .fontSize(10)
-        .fontColor(tk(this.dark, 'textSub'))
+        .fontSize(S.subSize)
+        .fontColor(tk(this.pal, 'textSub'))
         .width(38)
       Text(e.title)
         .fontSize(S.subSize)
-        .fontColor(tk(this.dark, 'text'))
+        .fontColor(tk(this.pal, 'text'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
       if (e.location.length > 0) {
         Text(e.location)
           .fontSize(S.microSize)
-          .fontColor(tk(this.dark, 'textHint'))
+          .fontColor(tk(this.pal, 'textHint'))
           .maxLines(1)
           .constraintSize({ maxWidth: 90 })
       }
@@ -939,41 +1159,58 @@ export struct HomeView {
     .onClick(() => { this.onNavigate('calendar'); })
   }
 
-  /** 整周视图：本周日程 */
+  /**
+   * v5.5：整周视图 —— **只报数**。
+   * v5.4 这里每天列 3 条标题，点开某天又换成另一种画法（带时间、带浅蓝框），
+   * 同一批数据两种样子。现在整周每一天只写「N 条任务 / N 条日程」，
+   * 点上面（或点这一天）才展开明细。
+   */
   @Builder weekPanel() {
-    Column({ space: 7 }) {
-      if (this.kWeekEvents.length > 0) {
-        Text('本周日程').fontSize(10.5).fontWeight(FontWeight.Medium).fontColor(tk(this.dark, 'textSub'))
-        ForEach(this.kWeekEvents, (e: EventItem) => {
-          this.eventRow(e)
-        }, (e: EventItem) => `we-${e.id}-${this.tick}`)
+    Column({  space: 0  }) {
+      if (this.kWeekGroups.length === 0) {
+        Text('本周还没有安排到具体时间的事 · 点上面的日期看那天')
+          .fontSize(S.microSize)
+          .fontColor(tk(this.pal, 'textHint'))
+          .padding({  top: S.space2Xl  })
+      } else {
+        ForEach(this.kWeekGroups, (g: WeekGroup) => {
+          Row({  space: S.spaceMd  }) {
+            Text(g.label)
+              .fontSize(S.subSize)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(tk(this.pal, 'textSub'))
+            Text(g.dateText)
+              .fontSize(S.subSize)
+              .fontColor(tk(this.pal, 'textFaint'))
+            if (g.isToday) {
+              Text('今天')
+                .fontSize(S.microSize)
+                .fontColor(tkInk(this.pal, 'brandDeep'))
+                .padding({  left: S.spaceMd, right: S.spaceMd, top: S.spaceXs, bottom: S.spaceXs  })
+                .borderRadius(S.radiusSm)
+                .backgroundColor(tk(this.pal, 'brandSoft'))
+            }
+            // v5.5：条数放在左边。放右边会被右下角的悬浮「写一条」按钮压住。
+            Text(this.groupCountText(g))
+              .fontSize(S.subSize)
+              .fontColor(tc(this.pal, '#5E7183', 1))
+              .margin({  left: S.spaceSm  })
+          }
+          .width('100%')
+          .alignItems(VerticalAlign.Center)
+          .padding({  top: S.spaceLg, bottom: S.spaceLg  })
+          .onClick(() => { this.dayPick = g.idx; this.recalc(); })
+        }, (g: WeekGroup) => `wg-${g.idx}-${this.tick}`)
       }
-      if (this.kWeekTasks.length > 0) {
-        Text('已排期任务').fontSize(10.5).fontWeight(FontWeight.Medium).fontColor(tk(this.dark, 'textSub'))
-          .margin({ top: 4 })
-        ForEach(this.kWeekTasks, (t: Task) => {
-          this.weekTaskRow(t)
-        }, (t: Task) => `wk-${t.id}-${this.tick}`)
-      }
-      if (this.kWeekEvents.length === 0 && this.kWeekTasks.length === 0) {
-        Text('本周还没有安排到具体时间的事。')
-          .fontSize(S.tinySize)
-          .fontColor(tc(this.dark, '#B9CAD8', 1))
-          .padding({ top: 8 })
-      }
-      Text('点上面的日期，看那天具体有什么。')
-        .fontSize(S.microSize)
-        .fontColor(tk(this.dark, 'textHint'))
-        .margin({ top: 6 })
     }
     .width('100%')
-    .margin({ top: 10 })
+    .margin({  top: S.spaceXs  })
     .alignItems(HorizontalAlign.Start)
   }
 
   /** 排期任务一行 */
   @Builder weekTaskRow(t: Task) {
-    Row({ space: 8 }) {
+    Row({  space: S.spaceLg  }) {
       StatusDot({
         status: t.status,
         dotSize: 20,
@@ -981,13 +1218,13 @@ export struct HomeView {
       })
       Text(t.title)
         .fontSize(S.subSize)
-        .fontColor(tk(this.dark, 'text'))
+        .fontColor(tk(this.pal, 'text'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
       Text(t.scheduled_start !== null ? D.hm(t.scheduled_start) : '')
         .fontSize(S.microSize)
-        .fontColor(tk(this.dark, 'textHint'))
+        .fontColor(tk(this.pal, 'textHint'))
     }
     .width('100%')
     .alignItems(VerticalAlign.Center)
@@ -995,19 +1232,20 @@ export struct HomeView {
 
   /** 选中某一天：那天具体的安排 */
   @Builder dayPanel() {
-    Column({ space: 7 }) {
-      Row({ space: 6 }) {
+    Column({  space: S.spaceLg  }) {
+      Row({  space: S.spaceMd  }) {
         Text(this.dayPickLabel())
-          .fontSize(10.5)
+          .fontSize(S.subSize)
           .fontWeight(FontWeight.Medium)
-          .fontColor(tk(this.dark, 'textSub'))
-        Blank()
+          .fontColor(tk(this.pal, 'textSub'))
+        // v5.5：「看整周」挪到左边。放右边会被右下角悬浮的「写一条」按钮压住。
         Text('看整周')
-          .fontSize(9.5)
-          .fontColor(tkInk(this.dark, 'brandDeep'))
-          .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-          .borderRadius(8)
-          .backgroundColor(tk(this.dark, 'brandSoft'))
+          .fontSize(S.tinySize)
+          .fontColor(tkInk(this.pal, 'brandDeep'))
+          .padding({  left: S.spaceLg, right: S.spaceLg, top: S.spaceSm, bottom: S.spaceSm  })
+          .borderRadius(S.radiusSm)
+          .backgroundColor(tk(this.pal, 'brandSoft'))
+          .margin({  left: S.spaceLg  })
           .onClick(() => { this.dayPick = -1; })
       }
       .width('100%')
@@ -1016,8 +1254,8 @@ export struct HomeView {
       if (this.kDayEvents.length === 0 && this.kDayTasks.length === 0) {
         Text('这天还没有安排。')
           .fontSize(S.tinySize)
-          .fontColor(tc(this.dark, '#B9CAD8', 1))
-          .padding({ top: 4, bottom: 4 })
+          .fontColor(tc(this.pal, '#B9CAD8', 1))
+          .padding({  top: S.spaceSm, bottom: S.spaceSm  })
       } else {
         ForEach(this.kDayEvents, (e: EventItem) => {
           this.eventRow(e)
@@ -1028,11 +1266,11 @@ export struct HomeView {
       }
     }
     .width('100%')
-    .margin({ top: 10 })
-    .padding({ left: 10, right: 10, top: 9, bottom: 9 })
-    .borderRadius(11)
-    .backgroundColor(tc(this.dark, '#F7FBFE', 0))
-    .border({ width: 1, color: tc(this.dark, tc(this.dark, '#E6F0F8', 2), 2) })
+    .margin({  top: S.spaceXl  })
+    .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceXl, bottom: S.spaceXl  })
+    .borderRadius(S.radiusBtn)
+    .backgroundColor(tc(this.pal, '#F7FBFE', 0))
+    .border({ width: 1, color: tc(this.pal, tc(this.pal, '#E6F0F8', 2), 2) })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -1042,7 +1280,8 @@ export struct HomeView {
       primaryText: '添加任务',
       onPrimary: () => { this.openSheet(); },
       onSearch: () => { this.onNavigate('search'); },
-      onCalendar: () => { this.onNavigate('calendar'); }
+      // v5.1：日历按钮去掉（和底栏「日历安排」重复）
+      showCalendar: false
     })
       .width('100%')
   }
@@ -1052,7 +1291,8 @@ export struct HomeView {
     Column() {
       Kpi({
         label: '我的任务', icon: 'tasks', value: `${this.kAllTasks}`,
-        unit: '项', sub: `已完成 ${this.kDoneCount} 项`, pct: this.kAllPct
+        numValue: this.kAllTasks,
+        unit: '件', sub: `已完成 ${this.kDoneCount} 件`, pct: this.kAllPct
       })
     }.layoutWeight(1)
   }
@@ -1060,10 +1300,10 @@ export struct HomeView {
   @Builder kpiRate() {
     Column() {
       Kpi({
-        label: '完成率', icon: 'checkCircle', iconBg: '#E3F8F2', iconFg: '#267261',
-        value: `${this.kAllPct}`, unit: '%',
-        sub: this.kPctSub,
-        subColor: tkInk(this.dark, 'brandDeep'), pct: this.kAllPct
+        label: '完成率', icon: 'checkCircle', iconBg: catBg(this.pal, 'study'), iconFg: misc(this.pal, 'kpiRateFg', '#267261'),
+        value: `${this.kAllPct}`, numValue: this.kAllPct, unit: '%',
+        sub: this.kPctSubShort,
+        subColor: tkInk(this.pal, 'brandDeep'), pct: this.kAllPct
       })
     }.layoutWeight(1)
   }
@@ -1071,32 +1311,14 @@ export struct HomeView {
   @Builder kpiStreak() {
     Column() {
       Kpi({
-        label: '习惯打卡', icon: 'flame', iconBg: '#FDEEE6', iconFg: '#A44F26',
-        value: `${this.kHabitStreak}`, unit: '天', sub: this.kHabitSub,
+        label: '最长连续', icon: 'flame', iconBg: paletteAt(this.pal, 'entryBg', 0), iconFg: paletteAt(this.pal, 'entryFg', 0),
+        value: `${this.kHabitStreak}`, numValue: this.kHabitStreak,
+        unit: '天', sub: this.kHabitSubShort,
         pct: this.kHabitPct
       })
     }.layoutWeight(1)
   }
 
-  @Builder kpiFocus() {
-    Column() {
-      Kpi({
-        label: '专注时长', icon: 'clock', iconBg: '#E9F3FB', iconFg: '#356B91',
-        value: this.kFocusH, unit: '小时', sub: '每天目标 2 小时 · 按预估算',
-        pct: this.kFocusPct
-      })
-    }.layoutWeight(1)
-  }
-
-  @Builder kpiPoints() {
-    Column() {
-      Kpi({
-        label: '成长积分', icon: 'star', iconBg: '#FDF4DC', iconFg: '#876312',
-        value: `${this.kPoints}`, unit: '分', sub: `本周 ${this.kWeekPoints} / 30 分`,
-        pct: this.kPointsPct
-      })
-    }.layoutWeight(1)
-  }
 
   build() {
     Stack() {
@@ -1106,32 +1328,32 @@ export struct HomeView {
           if (!this.loaded) {
             this.skeleton()
           } else {
-            Column({ space: 0 }) {
-              Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+            Column({  space: 0  }) {
+              Text(`${this.tick}`).fontSize(S.hiddenSize).width(1).height(1).opacity(0)
 
               this.pageTop()
 
               // ① hello：eyebrow + h1 + 副文案（v4.2：右上角显示设置里的「称呼」）
-              Column({ space: 6 }) {
-                Row({ space: 6 }) {
-                  Text(`${D.dotDate(new Date())} · ${D.weekdayFull(new Date())}`)
-                    .fontSize(9)
-                    .fontColor(tc(this.dark, '#9DB0C1', 1))
+              Column({  space: S.spaceMd  }) {
+                Row({  space: S.spaceMd  }) {
+                  Text(D.mdWeek(D.key(new Date())))
+                    .fontSize(S.tinySize)
+                    .fontColor(tc(this.pal, '#9DB0C1', 1))
                     .letterSpacing(1.6)
                   Blank()
                   if (this.kUserName.length > 0) {
-                    Row({ space: 4 }) {
-                      SymbolGlyph(sym('person')).fontSize(14).fontColor([tkInk(this.dark, 'brandDeep')])
+                    Row({  space: S.spaceSm  }) {
+                      SymbolGlyph(sym('person')).fontSize(S.cardTitleSize).fontColor([tkInk(this.pal, 'brandDeep')])
                       Text(this.kUserName)
-                        .fontSize(9.5)
+                        .fontSize(S.tinySize)
                         .fontWeight(FontWeight.Medium)
-                        .fontColor(tkInk(this.dark, 'brandDeep'))
+                        .fontColor(tkInk(this.pal, 'brandDeep'))
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                     }
-                    .padding({ left: 8, right: 9, top: 3, bottom: 3 })
-                    .borderRadius(999)
-                    .backgroundColor(tk(this.dark, 'brandSoft'))
+                    .padding({  left: S.spaceLg, right: S.spaceXl, top: S.spaceSm, bottom: S.spaceSm  })
+                    .borderRadius(S.radiusPill)
+                    .backgroundColor(tk(this.pal, 'brandSoft'))
                     .alignItems(VerticalAlign.Center)
                   }
                 }
@@ -1140,355 +1362,371 @@ export struct HomeView {
                 Text(this.kHeaderTitle)
                   .fontSize(S.titleSize)
                   .fontWeight(FontWeight.Bold)
-                  .fontColor(tk(this.dark, 'text'))
+                  .fontColor(tk(this.pal, 'text'))
                   .letterSpacing(-0.6)
                   .lineHeight(32)
                 Text(this.kHeaderSub)
-                  .fontSize(11)
-                  .fontColor(tk(this.dark, 'textSub'))
+                  .fontSize(S.labelSize)
+                  .fontColor(tk(this.pal, 'textSub'))
               }
               .width('100%')
               .alignItems(HorizontalAlign.Start)
-              .padding({ top: 14, bottom: 16 })
+              .padding({  top: S.spaceXl, bottom: S.space3Xl  })
 
-              // v3.0：全部内容入口（任务 / 灵感 / 日程 / 项目 / 复盘 / 习惯，一处看全）
-              Row({ space: 6 }) {
-                SymbolGlyph(sym('grid')).fontSize(14).fontColor([tkInk(this.dark, 'brandDeep')])
-                Text('全部内容').fontSize(10.5).fontWeight(FontWeight.Medium).fontColor(tkInk(this.dark, 'brandDeep'))
-                Text('所有东西，一处看全').fontSize(9.5).fontColor(tk(this.dark, 'textHint'))
+              // v3.0：所有内容入口（任务 / 记录 / 日程 / 项目 / 复盘 / 习惯，一处看全）
+              Row({  space: S.spaceMd  }) {
+                SymbolGlyph(sym('grid')).fontSize(S.cardTitleSize).fontColor([tkInk(this.pal, 'brandDeep')])
+                Text('所有内容').fontSize(S.subSize).fontWeight(FontWeight.Medium).fontColor(tkInk(this.pal, 'brandDeep'))
+                Text('一处看全').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
                 // v4.23：fs14 墨迹 11.7x10.6vp（盒子 14x14 >= 12vp、墨迹 >= 8vp）
-                SymbolGlyph(sym('right')).fontSize(14).fontColor([tk(this.dark, 'textHint')])
+                SymbolGlyph(sym('right')).fontSize(S.cardTitleSize).fontColor([tk(this.pal, 'textHint')])
               }
-              .padding({ left: 11, right: 11, top: 7, bottom: 7 })
-              .margin({ bottom: 14 })
-              .borderRadius(999)
-              .backgroundColor(tk(this.dark, 'brandSoft'))
-              .border({ width: 1, color: tk(this.dark, 'brandLine') })
+              .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceMd, bottom: S.spaceMd  })
+              .margin({  bottom: S.spaceXl  })
+              .borderRadius(S.radiusPill)
+              .backgroundColor(tk(this.pal, 'brandSoft'))
+              .border({ width: 1, color: tk(this.pal, 'brandLine') })
               .alignItems(VerticalAlign.Center)
               .onClick(() => { this.onNavigate('all'); })
 
-              // ② 5 个 KPI（手机端两列、第 5 个占满；平板一行 5 个，照网页端 .kpis）
-              // v4.26：中间档（平板竖屏，导航收成 70vp 之后内容区约 858vp）走 3 + 2，
-              //   和网页端 @media(max-width:1180px) 的 .kpis{repeat(3,1fr)} 对齐，
-              //   两张卡各占半行（layoutWeight 分的是整行宽度），不会留空洞。
-              if (this.contentW >= 900) {
-                Row({ space: 8 }) {
-                  this.kpiToday()
-                  this.kpiRate()
-                  this.kpiStreak()
-                  this.kpiFocus()
-                  this.kpiPoints()
+              // ② KPI 区（v5.16：三个数并成一行，手机也是三列）
+              // v4.26：中间档（平板竖屏）走 3 + 2，和网页端 @media(max-width:1180px) 的 .kpis{repeat(3,1fr)} 对齐。
+              // v5.1：KPI 从 5 个减到 3 个（专注时长只在趋势图里，成长积分彻底不要）。
+              // v5.16：以前手机是「2 个一行 + 第 3 个独占一整行」，第三张孤零零地横在下面，
+              //   看着像没排好；现在手机、平板都是一行三列。
+              //   为了三列在手机上放得下，副文案也收短了（长文案在下面的「今天该打卡」卡里）。
+              // v5.1（空状态）：整个库是空的 ⇒ 三个 0 全部收起，不给人看一片零；
+              //   没有习惯 ⇒ 习惯那一块也不出现（「宁可少一块，也不要一块空的」）。
+              if (!this.kAllEmpty) {
+                Column() {
+                  Row({  space: S.spaceLg  }) {
+                    this.kpiToday()
+                    this.kpiRate()
+                    if (this.kHasHabits) { this.kpiStreak() }
+                  }
+                  .width('100%')
                 }
                 .width('100%')
-              } else if (this.contentW >= 620) {
-                Row({ space: 8 }) {
-                  this.kpiToday()
-                  this.kpiRate()
-                  this.kpiStreak()
-                }
-                .width('100%')
-
-                Row({ space: 8 }) {
-                  this.kpiFocus()
-                  this.kpiPoints()
-                }
-                .width('100%')
-                .margin({ top: 8 })
-              } else {
-                Row({ space: 8 }) {
-                  this.kpiToday()
-                  this.kpiRate()
-                }
-                .width('100%')
-
-                Row({ space: 8 }) {
-                  this.kpiStreak()
-                  this.kpiFocus()
-                }
-                .width('100%')
-                .margin({ top: 8 })
-
-                Row({ space: 8 }) {
-                  this.kpiPoints()
-                }
-                .width('100%')
-                .margin({ top: 8 })
+                .margin({  bottom: S.space3Xl  })
               }
 
-              // v4.12：说清楚「习惯打卡」是什么；上下都留出间距，别贴着下面的卡
-              Text('「习惯打卡」= 现在还连着的最长天数（今天还没打卡不打断）；历史最长写在副标题里')
-                .fontSize(9)
-                .fontColor(tk(this.dark, 'textFaint'))
+              // v5.13：原来这里有一行「「习惯打卡」= 现在还连着的最长天数（今天还没打卡不打断）；
+              //   历史最长写在副标题里」—— 那是给开发者看的口径说明，用户看不懂也不需要知道。
+              //   KPI 卡自己的副标题已经写清楚了（「今天的习惯都打卡了 · 历史最长 N 天」），这行删掉，
+              //   首屏因此省下 30vp。
+              // ═══════ v5.1：首页第一屏 —— 两张卡各管一件事 ═══════
+              // ①「今天要做的」：只有今天的事（逾期置顶 → 今天 → 往后）。点圆圈直接完成（带撤销）。
+              // ②「这一周」：周条 + 周明细 + 领域色例。
+              //   （v5.1 第一版把这两件事塞在同一张卡里 ⇒ 一个标题下两个主题，看着挤、读不出重点。
+              //    v5.2 拆成两张卡。）
+              // v5.17：宽屏时「今天要做的」占 2 列、「这一周」占 1 列
+              //   （照网页端 .home-grid 的 .span2 / 普通卡；窄屏自动退化成单列竖排）
+              GridRow({ columns: this.gridCols(), gutter: { x: 14, y: 14 } }) {
+              GridCol({ span: this.spanFor(2) }) {
+              Column() {
+              Card({
+                // v5.0：入场逐个浮现
+                appearDelay: 0,
+                title: '今天要做的',
+                sub: this.kTodayList.length > 0 ? `今天 ${this.kTodayList.length + this.kTodayRest} 件` : '',
+                headMode: 'text', headText: '查看全部 ›', onHead: () => { this.onNavigate('tasks'); }
+              }) {
+                Column({  space: S.spaceXs  }) {
+                  if (this.kTodayList.length === 0) {
+                    // 空态压成一行，不占地方
+                    Row({  space: S.spaceLg  }) {
+                      SymbolGlyph(sym('calendar')).fontSize(S.headSize)
+                        .fontColor([this.kLoadError.length > 0 ? tk(this.pal, 'danger') : tk(this.pal, 'textHint')])
+                      // v5.14：库读不出来时别装成「没有任务」——
+                      //   原来整库读取失败也显示空列表，用户以为数据被清了。
+                      Text(this.kLoadError.length > 0
+                        ? `数据没读出来：${this.kLoadError}`
+                        : (this.kTotalTasks === 0 ? '还没有任务，先加一件今天想做的事。' : '今天没有到期的事，去任务面板看看。'))
+                        .fontSize(this.kLoadError.length > 0 ? 12 : S.subSize)
+                        .fontColor(this.kLoadError.length > 0 ? tk(this.pal, 'danger') : tk(this.pal, 'textHint'))
+                        .layoutWeight(1)
+                    }
+                    .width('100%')
+                    .padding({  top: S.spaceXl, bottom: S.spaceXl  })
+                    .alignItems(VerticalAlign.Center)
+                  } else {
+                    ForEach(this.kTodayList, (t: Task) => {
+                      this.todayRow(t)
+                    }, (t: Task) => `td-${t.id}-${t.status}-${this.tick}`)
+                  }
+
+                  // 已完成的沉底：折成一行，不跟未完成的一起占地方
+                  if (this.kTodayDoneCount > 0) {
+                    Row({  space: S.spaceMd  }) {
+                      SymbolGlyph(sym('check')).fontSize(S.cardTitleSize).fontColor([tkInk(this.pal, 'done')])
+                      Text(`今天完成 ${this.kTodayDoneCount} 件 · 查看`)
+                        .fontSize(S.subSize).fontColor(tk(this.pal, 'textFaint'))
+                    }
+                    .width('100%')
+                    .margin({  top: S.spaceXl  })
+                    .alignItems(VerticalAlign.Center)
+                    .onClick(() => { this.onNavigate('tasks'); })
+                  }
+
+                  if (this.kTodayRest > 0) {
+                    Row({  space: S.spaceMd  }) {
+                      Text(`还有 ${this.kTodayRest} 件今天要做`).fontSize(S.subSize).fontColor(tk(this.pal, 'textFaint'))
+                      Blank()
+                      Text('去任务面板 →')
+                        .fontSize(S.subSize).fontColor(tc(this.pal, '#5E7183', 1))
+                        .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceSm, bottom: S.spaceSm  })
+                        .borderRadius(S.radiusSm)
+                        .backgroundColor(tk(this.pal, 'card'))
+                        .border({ width: 1, color: tk(this.pal, 'line') })
+                        .onClick(() => { this.onNavigate('tasks'); })
+                    }
+                    .width('100%')
+                    .margin({  top: S.spaceXl  })
+                    .alignItems(VerticalAlign.Center)
+                  }
+
+                  // v5.13：到期日在今天之后的那堆，单独一行说清楚，不混进「今天」
+                  if (this.kSoonCount > 0) {
+                    Row({  space: S.spaceMd  }) {
+                      Text(`另有 ${this.kSoonCount} 件排在后面`).fontSize(S.subSize).fontColor(tk(this.pal, 'textFaint'))
+                      Blank()
+                      Text('去任务面板 →')
+                        .fontSize(S.subSize).fontColor(tc(this.pal, '#5E7183', 1))
+                        .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceSm, bottom: S.spaceSm  })
+                        .borderRadius(S.radiusSm)
+                        .backgroundColor(tk(this.pal, 'card'))
+                        .border({ width: 1, color: tk(this.pal, 'line') })
+                        .onClick(() => { this.onNavigate('tasks'); })
+                    }
+                    .width('100%')
+                    .margin({  top: S.spaceXl  })
+                    .alignItems(VerticalAlign.Center)
+                  }
+
+                  // 直接打勾之后的撤销条（5 秒）
+                  if (this.undoTaskId > 0) {
+                    Row({  space: S.spaceLg  }) {
+                      Text('已完成').fontSize(S.subSize).fontColor(tk(this.pal, 'text'))
+                      Blank()
+                      Text('撤销')
+                        .fontSize(S.subSize)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor(tkInk(this.pal, 'brandDeep'))
+                        .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceSm, bottom: S.spaceSm  })
+                        .borderRadius(S.radiusSm)
+                        .backgroundColor(tk(this.pal, 'brandSoft'))
+                        .onClick(() => { this.undoComplete(); })
+                    }
+                    .width('100%')
+                    .margin({  top: S.spaceXl  })
+                    .padding({  left: S.spaceXl, right: S.spaceSm, top: S.spaceSm, bottom: S.spaceSm  })
+                    .borderRadius(S.radiusBtn)
+                    .backgroundColor(tc(this.pal, '#F2F8FD', 0))
+                  }
+
+                }
                 .width('100%')
-                .margin({ top: 10, bottom: 14 })
+              }
+              }
+              .width('100%')
+              }
+              // ── ②「这一周」：从 ① 里拆出来，独立成卡 ──
+              GridCol({ span: this.spanFor(1) }) {
+              Column() {
+              Card({
+                appearDelay: 70,
+                title: '这一周',
+                sub: this.kWeekRange,
+                headMode: 'text', headText: '日历 ›', onHead: () => { this.onNavigate('calendar'); }
+              }) {
+                Column({  space: 0  }) {
+                  WeekGantt({
+                    dayNums: this.kWeekDayNums,
+                    todayIdx: this.kTodayIdx,
+                    bars: this.kWeekBars,
+                    selectedIdx: this.dayPick,
+                    onDayTap: (i: number) => {
+                      this.dayPick = this.dayPick === i ? -1 : i;
+                      this.recalc();
+                    }
+                  })
+
+                  if (this.dayPick >= 0) {
+                    this.dayPanel()
+                  } else {
+                    this.weekPanel()
+                  }
+
+                  Row({  space: S.spaceXl  }) {
+                    ForEach(['work', 'side', 'media', 'study', 'life'], (a: string) => {
+                      Row({  space: S.spaceSm  }) {
+                        Row().width(6).height(6).borderRadius(S.radiusDot).backgroundColor(areaColor(this.pal, a))
+                        Text(areaLabel(a)).fontSize(S.microSize).fontColor(tk(this.pal, 'textHint'))
+                      }
+                    }, (a: string) => `wf-${a}`)
+                  }
+                  .width('100%')
+                  .margin({  top: S.spaceLg  })
+                }
+                .width('100%')
+              }
+              }
+              .width('100%')
+              }
+              }
+              .width('100%')
+              .margin({  bottom: S.space3Xl  })
+
+              // v5.1：三个小入口块（原来那个「核心模块」八宫格太满，只留最常用的三个）
+              this.entryTiles()
 
               // v4.6：宽屏时 ③–⑩ 照网页端 .home-grid 排版：
               // 一行两块 —— 宽的（趋势 / 最近任务 / 核心模块 / 灵感派）占 2 列，
               // 窄的（投入占比 / 成长日历 / 本周小结 / 今日一句）占 1 列；
               // 同一行的两块拉齐高度，不留参差不齐的空当（手机上仍是单列顺序排）。
               Column() {
-              GridRow({ columns: this.gridCols(), gutter: { x: 14, y: 14 } }) {
-              // ③ 本周成长趋势
+              GridRow({ columns: this.gridCols(), gutter: { x: 14, y: 14 } }) {              // ③ 接下来 + ⑥ 今天该打卡
+              // v5.12：原来这里是「本周成长趋势」和「本月成长日历」——
+              // 趋势画的是任务的「估算时长」（App 里没有计时器，多数任务没填估时 ⇒ 曲线几乎是 0），
+              // 月历只数每天完成几项（和上面 KPI 的「完成率」重复）⇒ 换成两张真能用的：
+              // ③ 接下来：未来 7 天的安排 + 逾期提醒；⑥ 今天该打卡：点一下就打卡。
               GridCol({ span: this.spanFor(2) }) {
                 Column() {
                   Card({
-                      fixedHeight: this.gridWide() ? this.rowH[0] : 0,
-                      onContentHeight: (h: number) => { this.setContentH(0, h); },
-                      title: '本周成长趋势', sub: '每天专注时长',
-                    headMode: this.trendRange === 0 ? 'text' : 'text',
-                    headText: this.trendRange === 0 ? '上周 ›' : '本周 ›',
-                    onHead: () => { this.trendRange = this.trendRange === 0 ? 1 : 0; this.recalc(); }
+                    // v5.0：入场逐个浮现
+                    appearDelay: 0,
+                    fixedHeight: this.gridWide() ? this.rowH[0] : 0,
+                    onContentHeight: (h: number) => { this.setContentH(0, h); },
+                    title: '接下来', sub: '未来 7 天的安排',
+                    headMode: 'text', headText: '日历 ›',
+                    onHead: () => { this.onNavigate('calendar'); }
                   }) {
-                    Column({ space: 2 }) {
-                      Row({ space: 6 }) {
-                        Text(`${this.kTrendSum}h`).fontSize(22).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text'))
-                        Text(this.trendRange === 1 ? '上周累计专注' : '本周累计专注').fontSize(S.tinySize).fontColor(tk(this.dark, 'textFaint'))
-                        Blank()
-                      }
-                      .width('100%')
-                      .alignItems(VerticalAlign.Bottom)
-                      LineChart({ values: this.kTrendValues, labels: this.kTrendLabels, chartHeight: 150,
-                      onBubble: (bx: number, by: number, bw: number, bh: number) => { this.bubbleLocal = [bx, by, bw, bh]; } })
-                    .onAreaChange((oldA: Area, newA: Area) => { this.chartArea(oldA, newA); })
-                      Row({ space: 10 }) {
-                        Row({ space: 4 }) {
-                          Row().width(6).height(6).borderRadius(3).backgroundColor(tk(this.dark, 'brand'))
-                          Text('专注时长（小时）').fontSize(S.microSize + 0.5).fontColor(tk(this.dark, 'textHint'))
-                        }
-                        Text('按任务完成日统计').fontSize(S.microSize + 0.5).fontColor(tk(this.dark, 'textHint'))
-                      }
-                      .width('100%')
-                      .margin({ top: 4 })
-                    }
-                    .width('100%')
-                  }
-
-                }
-              }
-
-              // ④ 模块投入占比
-              GridCol({ span: this.spanFor(1) }) {
-                Column() {
-                  Card({
-                      fixedHeight: this.gridWide() ? this.rowH[0] : 0,
-                      onContentHeight: (h: number) => { this.setContentH(1, h); },
-                      title: '模块投入占比',
-                    headMode: 'text',
-                    headText: this.investRange === 0 ? '本月 ›' : '本周 ›',
-                    onHead: () => { this.investRange = this.investRange === 0 ? 1 : 0; this.recalc(); }
-                  }) {
-                    Column({ space: 10 }) {
-                      Column() {
-                        Donut({ pieces: this.kInvestPieces, centerBig: this.kInvestTotal, centerSmall: this.investRange === 1 ? '本月总投入' : '本周总投入' })
-                      }
-                      .width('100%')
-                      .alignItems(HorizontalAlign.Center)
-
-                      DonutLegend({ pieces: this.kInvestPieces })
-
-                      Divider().color('#EAF2F9').strokeWidth(1).margin({ top: 2 })
-
-                      Row({ space: 3 }) {
-                        ForEach(this.kInvestItems, (i: InvestItem) => {
-                          Row()
-                            .layoutWeight(Math.max(i.pct, 2))
-                            .height(5)
-                            .backgroundColor(i.hex)
-                        }, (i: InvestItem) => `dfb-${i.area}`)
-                      }
-                      .width('100%')
-                      .height(5)
-                      .borderRadius(99)
-
-                      Text(this.kInvestItems.length > 0 && this.kInvestItems[0].pct > 0
-                        ? `这周你在 ${this.kInvestItems[0].label} 上花的时间最多，占 ${this.kInvestItems[0].pct}%。`
-                        : '本周还没有排期，先给一件事留个时间块。')
-                        .fontSize(S.subSize)
-                        .fontColor(tc(this.dark, '#6E8497', 1))
-                        .lineHeight(18)
-                        .width('100%')
-                    }
-                    .width('100%')
-                  }
-
-                }
-              }
-
-
-              // ⑤ 最近任务
-              GridCol({ span: this.spanFor(2) }) {
-                Column() {
-                  Card({
-                    fixedHeight: this.gridWide() ? this.rowH[1] : 0,
-                      onContentHeight: (h: number) => { this.setContentH(2, h); },
-                    title: '最近任务', headMode: 'text', headText: '查看全部 ›', onHead: () => { this.onNavigate('tasks'); } }) {
-                    Column({ space: 2 }) {
-                      if (this.kRecentCount === 0) {
-                        Column({ space: 5 }) {
-                          // v4.4：一条任务都没有 vs 全部做完了，是两回事，别都写「还没有任务」
-                          Text(this.kTotalTasks === 0 ? '还没有任务' : '都做完了')
-                            .fontSize(S.bodySize).fontWeight(FontWeight.Medium).fontColor(tk(this.dark, 'textFaint'))
-                          Text(this.kTotalTasks === 0 ? '先加一件今天想做的事。' : '所有任务都完成了，休息一下。')
-                            .fontSize(S.subSize).fontColor(tk(this.dark, 'textPale'))
+                    Column({  space: S.spaceLg  }) {
+                      if (this.kNextOverdue > 0) {
+                        Row({  space: S.spaceMd  }) {
+                          Text(`${this.kNextOverdue} 件已经逾期`).fontSize(S.subSize).fontColor(tc(this.pal, '#A83440', 1))
+                          Blank()
+                          Text('去处理 ›').fontSize(S.tinySize).fontColor(tc(this.pal, '#A83440', 1))
                         }
                         .width('100%')
-                        .padding({ top: 18, bottom: 18 })
-                        .alignItems(HorizontalAlign.Center)
+                        .padding({  left: S.spaceXl, right: S.spaceXl, top: S.spaceMd, bottom: S.spaceMd  })
+                        .borderRadius(S.radiusSm)
+                        .backgroundColor(tc(this.pal, '#FDEDEA', 0))
+                        .onClick(() => { this.onNavigate('tasks'); })
+                      }
+                      if (this.kNextEvents.length === 0) {
+                        Column({  space: S.spaceSm  }) {
+                          Text('接下来 7 天没有安排。').fontSize(S.bodySize).fontColor(tk(this.pal, 'textFaint'))
+                          Text('有空就把想做的事记下来。').fontSize(S.subSize).fontColor(tk(this.pal, 'textPale'))
+                        }
+                        .width('100%')
+                        .padding({  top: S.spaceXl, bottom: S.spaceXl  })
+                        .alignItems(HorizontalAlign.Start)
                       } else {
-                        ForEach(this.kRecent, (t: Task) => {
-                          this.taskRow(t)
-                        }, (t: Task) => `rc-${t.id}-${this.tick}`)
+                        ForEach(this.kNextEvents, (e: NextEvent) => {
+                          Row({  space: S.spaceLg  }) {
+                            Text(e.dayLabel)
+                              .fontSize(S.microSize)
+                              .fontColor(e.isToday ? tkInk(this.pal, 'brandDeep') : tk(this.pal, 'textSub'))
+                              .width(56)
+                              .textAlign(TextAlign.Center)
+                              .padding({  left: S.spaceXs, right: S.spaceXs, top: S.spaceXs, bottom: S.spaceXs  })
+                              .borderRadius(S.radiusXs)
+                              .backgroundColor(e.isToday ? tk(this.pal, 'brandSoft') : tc(this.pal, '#F1F7FC', 0))
+                            Text(e.timeLabel).fontSize(S.tinySize).fontColor(tk(this.pal, 'textSub')).width(38)
+                            Text(e.title).fontSize(S.bodySize).fontColor(tk(this.pal, 'text')).maxLines(1)
+                              .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                          }
+                          .width('100%')
+                          .alignItems(VerticalAlign.Center)
+                          .onClick(() => { this.onNavigate('calendar'); })
+                        }, (e: NextEvent) => `ne-${e.id}-${this.tick}`)
+                        if (this.kNextMore > 0) {
+                          Text(`还有 ${this.kNextMore} 条 ›`).fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint')).width('100%')
+                        }
                       }
-
-                      Divider().color('#EAF2F9').strokeWidth(1).margin({ top: 8 })
-
-                      Row({ space: 6 }) {
-                        Text(`还有 ${this.kOpenAll} 件待处理`).fontSize(10).fontColor(tk(this.dark, 'textFaint'))
-                        Blank()
-                        Text('去任务面板 →')
-                          .fontSize(10)
-                          .fontColor(tc(this.dark, '#5E7183', 1))
-                          .padding({ left: 9, right: 9, top: 3, bottom: 3 })
-                          .borderRadius(9)
-                          .backgroundColor(tk(this.dark, 'card'))
-                          .border({ width: 1, color: tk(this.dark, 'line') })
-                          .onClick(() => { this.onNavigate('tasks'); })
-                      }
-                      .width('100%')
-                      .margin({ top: 8 })
-                      .alignItems(VerticalAlign.Center)
                     }
                     .width('100%')
                   }
 
                 }
               }
-
-              // ⑥ 本月成长日历
+              // ⑥ 今天该打卡
               GridCol({ span: this.spanFor(1) }) {
                 Column() {
                   Card({
-                      fixedHeight: this.gridWide() ? this.rowH[1] : 0,
-                      onContentHeight: (h: number) => { this.setContentH(3, h); },
-                      title: '本月成长日历', headMode: 'arrows',
-                    onPrev: () => { this.calOffset -= 1; this.recalc(); },
-                    onNext: () => { this.calOffset += 1; this.recalc(); }
+                    // v5.0：入场逐个浮现
+                    appearDelay: 180,
+                    fixedHeight: this.gridWide() ? this.rowH[0] : 0,
+                    onContentHeight: (h: number) => { this.setContentH(1, h); },
+                    title: '今天该打卡', sub: '点一下就打卡',
+                    headMode: 'text', headText: '全部 ›',
+                    onHead: () => { this.onNavigate('habits'); }
                   }) {
-                    MonthCal({ cells: this.kCalCells, monthLabel: this.kCalLabel, doneCount: this.kCalDone })
-                  }
-
-                }
-              }
-
-
-              // ⑦ 核心模块
-              GridCol({ span: this.spanFor(2) }) {
-                Column() {
-                  Card({
-                    fixedHeight: this.gridWide() ? this.rowH[2] : 0,
-                      onContentHeight: (h: number) => { this.setContentH(4, h); },
-                    title: '核心模块', headMode: 'text', headText: '进入任务面板 ›', onHead: () => { this.onNavigate('tasks'); } }) {
-                    Column({ space: 8 }) {
-                      Row({ space: 8 }) {
-                        Column() {
-                          ModTile({ icon: 'tasks', label: '任务面板', sub: '计划与打卡', onTap: () => { this.onNavigate('tasks'); } })
-                        }.layoutWeight(1)
-                        Column() {
-                          ModTile({
-                            icon: 'calendar', label: '日历安排', sub: '日程与时间块',
-                            iconBg: '#E3F8F2', iconFg: '#267261', onTap: () => { this.onNavigate('calendar'); }
-                          })
-                        }.layoutWeight(1)
-                      }.width('100%')
-                      Row({ space: 8 }) {
-                        Column() {
-                          ModTile({
-                            icon: 'note', label: '记录灵感', sub: '随手写下想法',
-                            iconBg: '#FCEAF2', iconFg: '#AA4071', onTap: () => { this.onNavigate('notes'); }
-                          })
-                        }.layoutWeight(1)
-                        Column() {
-                          ModTile({
-                            icon: 'wand', label: '每日复盘', sub: '回顾与调整',
-                            iconBg: '#F1ECFE', iconFg: '#6B4FD0', onTap: () => { this.onNavigate('review'); }
-                          })
-                        }.layoutWeight(1)
-                      }.width('100%')
-                      Row({ space: 8 }) {
-                        Column() {
-                          ModTile({
-                            icon: 'target', label: '每日习惯', sub: '连续打卡',
-                            iconBg: '#FDF4DC', iconFg: '#876312', onTap: () => { this.onNavigate('habits'); }
-                          })
-                        }.layoutWeight(1)
-                        Column() {
-                          ModTile({
-                            icon: 'grid', label: '数据洞察', sub: '趋势与投入',
-                            iconBg: '#E9F3FB', iconFg: '#356B91', onTap: () => { this.onNavigate('stats'); }
-                          })
-                        }.layoutWeight(1)
-                      }.width('100%')
-                      Row({ space: 8 }) {
-                        Column() {
-                          ModTile({
-                            icon: 'search', label: '全局搜索', sub: '找任何一条',
-                            iconBg: '#E1F7F5', iconFg: '#0F6B66', onTap: () => { this.onNavigate('search'); }
-                          })
-                        }.layoutWeight(1)
-                        Column() {
-                          ModTile({
-                            icon: 'gear', label: '偏好设置', sub: '本地与 AI',
-                            iconBg: '#F0F4F8', iconFg: '#52697E', onTap: () => { this.onNavigate('settings'); }
-                          })
-                        }.layoutWeight(1)
-                      }.width('100%')
-                    }
-                    .width('100%')
-                  }
-
-                }
-              }
-
-              // ⑧ 本周小结
-              GridCol({ span: this.spanFor(1) }) {
-                Column() {
-                  Card({
-                    fixedHeight: this.gridWide() ? this.rowH[2] : 0,
-                      onContentHeight: (h: number) => { this.setContentH(5, h); },
-                    title: '本周小结' }) {
-                    Column({ space: 10 }) {
-                      Text(this.kSummary)
-                        .fontSize(S.subSize)
-                        .fontColor(tc(this.dark, '#4E6579', 1))
-                        .lineHeight(19)
+                    Column({  space: S.spaceXl  }) {
+                      if (this.kHabitRows.length === 0) {
+                        Column({  space: S.spaceSm  }) {
+                          Text('还没有习惯').fontSize(S.bodySize).fontColor(tk(this.pal, 'textFaint'))
+                          Text('加一个每天都要做的小事。').fontSize(S.subSize).fontColor(tk(this.pal, 'textPale'))
+                        }
                         .width('100%')
-                      MiniBars({ values: this.kTrendValues, chartHeight: 44 })
+                        .padding({  top: S.spaceXl, bottom: S.spaceXl  })
+                        .alignItems(HorizontalAlign.Start)
+                      } else {
+                        Text(this.kHabitPending2 === 0 ? '今天的都打卡了' : `今天还有 ${this.kHabitPending2} 个没打卡`)
+                          .fontSize(S.subSize)
+                          .fontColor(tk(this.pal, 'textSub'))
+                          .width('100%')
+                        ForEach(this.kHabitRows, (h: HabitView) => {
+                          Column({  space: S.spaceMd  }) {
+                            Row({  space: S.spaceMd  }) {
+                              Text(h.name).fontSize(S.bodySize).fontColor(tk(this.pal, 'text')).maxLines(1)
+                                .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                              Text(h.streak > 0 ? `连续 ${h.streak} 天` : '刚开始').fontSize(S.tinySize).fontColor(tk(this.pal, 'textHint'))
+                            }
+                            .width('100%')
+                            Row({  space: S.spaceSm  }) {
+                              ForEach(this.kHabitDays, (day: string) => {
+                                Row()
+                                  .width(14).height(14).borderRadius(S.radiusSm)
+                                  .backgroundColor(this.habitLogged(h, day) ? h.color : tc(this.pal, '#EDF4FA', 0))
+                                  .border({ width: 1, color: this.habitLogged(h, day) ? h.color : (day === this.kHabitToday ? tk(this.pal, 'brand') : tc(this.pal, '#E4EFF8', 2)) })
+                              }, (day: string) => `hd-${h.id}-${day}-${this.tick}`)
+                            }
+                            .width('100%')
+                          }
+                          .width('100%')
+                          .onClick(() => { this.checkHabit(h); })
+                        }, (h: HabitView) => `hr-${h.id}-${this.tick}`)
+                      }
                     }
                     .width('100%')
                   }
 
                 }
               }
-
 
               // ⑨ 灵感派
-              GridCol({ span: this.spanFor(2) }) {
+              // v5.1：③ 随手记（原来叫「灵感派」）—— 独占一行，点一下展开那几条
+              GridCol({ span: this.spanFor(3) }) {
                 Column() {
                   Card({
-                      fixedHeight: this.gridWide() ? this.rowH[3] : 0,
-                      onContentHeight: (h: number) => { this.setContentH(6, h); },
-                      title: '灵感派', sub: '从记录里挑',
-                    headMode: 'text', headText: '换一批 ›',
-                    onHead: () => { this.spin += 1; this.recalc(); }
+                    // v5.0：入场逐个浮现
+                    appearDelay: 240,
+                      fixedHeight: this.gridWide() ? this.rowH[1] : 0,
+                      onContentHeight: (h: number) => { this.setContentH(2, h); },
+                      title: '随手记', sub: '随手记里的几条',
+                    headMode: 'text', headText: '全部 ›',
+                    onHead: () => { this.onNavigate('notes'); }
                   }) {
-                    Column({ space: 10 }) {
+                    Column({  space: S.spaceXl  }) {
                       if (this.kCandCount === 0) {
-                        Column({ space: 5 }) {
-                          Text('还没有记录').fontSize(S.bodySize).fontColor(tk(this.dark, 'textFaint'))
-                          Text('随手记下第一条灵感。').fontSize(S.subSize).fontColor(tk(this.dark, 'textPale'))
+                        Column({  space: S.spaceMd  }) {
+                          Text('还没有记录').fontSize(S.bodySize).fontColor(tk(this.pal, 'textFaint'))
+                          Text('随手记下第一条记录。').fontSize(S.subSize).fontColor(tk(this.pal, 'textPale'))
                         }
                         .width('100%')
-                        .padding({ top: 14, bottom: 14 })
+                        .padding({  top: S.space3Xl, bottom: S.space3Xl  })
                         .alignItems(HorizontalAlign.Center)
                       } else {
                         Column() {
@@ -1497,46 +1735,46 @@ export struct HomeView {
                         .width(118)
                         .height(118)
                         .borderRadius(59)
-                        .backgroundColor(tk(this.dark, 'card'))
+                        .backgroundColor(tk(this.pal, 'card'))
                         .justifyContent(FlexAlign.Center)
                         .onClick(() => { this.spin += 1; })
 
-                        Column({ space: 2 }) {
+                        Column({  space: S.spaceXs  }) {
                           ForEach(this.kCandItems.slice(0, 3), (c: CandItem, idx: number) => {
-                            Column({ space: 4 }) {
-                              Row({ space: 8 }) {
+                            Column({  space: S.spaceSm  }) {
+                              Row({  space: S.spaceLg  }) {
                                 Row() {
-                                  Text(`${idx + 1}`).fontSize(8).fontColor(idx === 0 ? tkInk(this.dark, 'brandDeep') : tc(this.dark, '#8FA2B3', 1))
+                                  Text(`${idx + 1}`).fontSize(S.microSize).fontColor(idx === 0 ? tkInk(this.pal, 'brandDeep') : tc(this.pal, '#8FA2B3', 1))
                                 }
                                 .width(16)
                                 .height(16)
-                                .borderRadius(8)
-                                .backgroundColor(idx === 0 ? tk(this.dark, 'brandSoft') : tc(this.dark, '#F1F7FC', 0))
+                                .borderRadius(S.radiusSm)
+                                .backgroundColor(idx === 0 ? tk(this.pal, 'brandSoft') : tc(this.pal, '#F1F7FC', 0))
                                 .justifyContent(FlexAlign.Center)
                                 .alignItems(VerticalAlign.Center)
                                 Text(c.title)
                                   .fontSize(S.subSize)
-                                  .fontColor(tk(this.dark, 'text'))
+                                  .fontColor(tk(this.pal, 'text'))
                                   .maxLines(1)
                                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                                   .layoutWeight(1)
-                                Text(`${c.pct}%`).fontSize(S.microSize).fontColor(tc(this.dark, '#8FA2B3', 1))
+                                Text(`${c.pct}%`).fontSize(S.microSize).fontColor(tc(this.pal, '#8FA2B3', 1))
                               }
                               .width('100%')
-                              .padding({ top: 5, bottom: 3 })
+                              .padding({  top: S.spaceMd, bottom: S.spaceSm  })
                               .alignItems(VerticalAlign.Center)
 
                               Row() {
                                 Row()
                                   .width(`${c.pct}%`)
                                   .height(4)
-                                  .borderRadius(2)
+                                  .borderRadius(S.radiusDot)
                                   .backgroundColor(c.color)
                               }
                               .width('100%')
                               .height(4)
-                              .borderRadius(2)
-                              .backgroundColor(tk(this.dark, 'track'))
+                              .borderRadius(S.radiusDot)
+                              .backgroundColor(tk(this.pal, 'track'))
                             }
                             .width('100%')
                             .onClick(() => { this.onNavigate('notes'); })
@@ -1544,79 +1782,40 @@ export struct HomeView {
 
                           Text('从记下的东西里，挑一条现在就动手。')
                             .fontSize(S.microSize + 0.5)
-                            .fontColor(tk(this.dark, 'textHint'))
-                            .margin({ top: 6 })
+                            .fontColor(tk(this.pal, 'textHint'))
+                            .margin({  top: S.spaceMd  })
                         }
                         .width('100%')
+
+                        // v5.1：就地展开最近记的几条 —— 不跳页
+                        if (this.notesOpen) {
+                          Divider()
+                            .color(tk(this.pal, 'line'))
+                            .strokeWidth(1)
+                            .margin({  top: S.spaceLg, bottom: S.spaceSm  })
+
+                          ForEach(this.recentNotes(), (n: Note) => {
+                            this.noteLine(n)
+                          }, (n: Note) => `rn-${n.id}-${this.tick}`)
+
+                          Text(`共 ${this.notes.length} 条 · 全部 ›`)
+                            .fontSize(S.microSize + 0.5)
+                            .fontColor(tkInk(this.pal, 'brandDeep'))
+                            .width('100%')
+                            .margin({  top: S.spaceMd  })
+                            .onClick(() => { this.onNavigate('notes'); })
+                        } else {
+                          Text('▾ 看看最近记了什么')
+                            .fontSize(S.microSize + 0.5)
+                            .fontColor(tkInk(this.pal, 'brandDeep'))
+                            .width('100%')
+                            .margin({  top: S.spaceMd  })
+                            .onClick(() => { this.notesOpen = true; })
+                        }
                       }
                     }
                     .width('100%')
                     .alignItems(HorizontalAlign.Center)
-                  }
-
-                }
-              }
-
-              // ⑩ 今日一句
-              GridCol({ span: this.spanFor(1) }) {
-                Column() {
-                  Card({
-                    fixedHeight: this.gridWide() ? this.rowH[3] : 0,
-                      onContentHeight: (h: number) => { this.setContentH(7, h); },
-                    title: '今日一句', headMode: 'text', headText: '全部 ›', onHead: () => { this.onNavigate('notes'); } }) {
-                    Column({ space: 9 }) {
-                      Row({ space: 8 }) {
-                        SymbolGlyph(sym('quote')).fontSize(14).fontColor([tc(this.dark, '#B9CAD8', 1)])
-                        Column({ space: 4 }) {
-                          Text('每一个微小的坚持，都在让你靠近更喜欢的自己。')
-                            .fontSize(S.bodySize)
-                            .fontColor(tc(this.dark, '#4E6579', 1))
-                            .lineHeight(21)
-                            .width('100%')
-                          if (this.kQuote.length > 0) {
-                            Text(`最近记下：${this.kQuote}`)
-                              .fontSize(S.tinySize)
-                              .fontColor(tk(this.dark, 'textHint'))
-                              .width('100%')
-                          }
-                        }
-                        .alignItems(HorizontalAlign.Start)
-                        .layoutWeight(1)
-                      }
-                      .width('100%')
-                      .alignItems(VerticalAlign.Top)
-
-                      if (this.notes.length > 0) {
-                        Column({ space: 6 }) {
-                          ForEach(this.notes.slice(0, 3), (n: Note) => {
-                            Row({ space: 7 }) {
-                              Row().width(6).height(6).borderRadius(3).backgroundColor(tk(this.dark, 'brand'))
-                              Text(n.title.length > 0 ? n.title : n.content.substring(0, 16))
-                                .fontSize(S.subSize)
-                                .fontColor(tc(this.dark, '#4E6579', 1))
-                                .maxLines(1)
-                                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                                .layoutWeight(1)
-                              Text(D.short(D.dateOf(n.updated_at))).fontSize(S.microSize).fontColor(tk(this.dark, 'textHint'))
-                            }
-                            .width('100%')
-                            .alignItems(VerticalAlign.Center)
-                            .onClick(() => { this.onNavigate('notes'); })
-                          }, (n: Note) => `qn-${n.id}-${this.tick}`)
-                        }
-                        .width('100%')
-                      }
-
-                      Divider().color('#EAF2F9').strokeWidth(1)
-                      Row({ space: 6 }) {
-                        Text('共 ').fontSize(10).fontColor(tk(this.dark, 'textFaint'))
-                        Text(`${this.notes.length}`).fontSize(10).fontColor(tc(this.dark, '#4E6579', 1)).fontWeight(FontWeight.Medium)
-                        Text(' 条记录').fontSize(10).fontColor(tk(this.dark, 'textFaint'))
-                        Blank()
-                      }
-                      .width('100%')
-                    }
-                    .width('100%')
                   }
 
                 }
@@ -1626,50 +1825,10 @@ export struct HomeView {
               .width('100%')
               }
               .width('100%')
-
-              // ⑪ 本周安排（v2.9：接入日历日程；日期可点，看那天的安排）
-              SecHead({
-                title: '本周安排', count: `${this.kWeekArrCount} 件安排`, rightMode: 'arrows',
-                onPrev: () => { this.weekOffset -= 1; this.dayPick = -1; this.recalc(); },
-                onNext: () => { this.weekOffset += 1; this.dayPick = -1; this.recalc(); }
-              })
-
-              Column() {
-                Card({ title: '给灵感留一点时间', sub: this.kWeekRange }) {
-                  WeekGantt({
-                    dayNums: this.kWeekDayNums,
-                    todayIdx: this.kTodayIdx,
-                    bars: this.kWeekBars,
-                    selectedIdx: this.dayPick,
-                    onDayTap: (i: number) => {
-                this.dayPick = this.dayPick === i ? -1 : i;
-                this.recalc();
-              }
-                  })
-
-                  if (this.dayPick >= 0) {
-                    this.dayPanel()
-                  } else {
-                    this.weekPanel()
-                  }
-
-                  Row({ space: 10 }) {
-                    ForEach(['work', 'side', 'media', 'study', 'life'], (a: string) => {
-                      Row({ space: 4 }) {
-                        Row().width(6).height(6).borderRadius(2).backgroundColor(areaColor(this.dark, a))
-                        Text(areaLabel(a)).fontSize(S.microSize).fontColor(tk(this.dark, 'textHint'))
-                      }
-                    }, (a: string) => `wf-${a}`)
-                  }
-                  .width('100%')
-                  .margin({ top: 8 })
-                }
-              }
-              .width('100%')
-              .margin({ bottom: S.pageBottom })
+              .margin({  bottom: R.bottomPad()  })
             }
             .width('100%')
-            .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+            .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop  })
             .alignItems(HorizontalAlign.Start)
           }
         }
@@ -1680,10 +1839,16 @@ export struct HomeView {
         .height('100%')
         .scrollBar(BarState.Off)
         .constraintSize({ maxWidth: 1240 })
-        .backgroundColor(tk(this.dark, 'bg'))
+        // v5.0：页面底色改成透明，让 Index 根 Stack 上的大光斑透出来
+      .backgroundColor(Color.Transparent)
         .edgeEffect(EdgeEffect.Spring)
         // v4.5：滚动时把右下角悬浮按钮藏起来（它正好压在趋势图末点气泡上），停了就回来
-        .onDidScroll(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+        // v5.0：顺手把滚动偏移报给页面底色（背景光斑做 0.12 倍视差；超过 10px 才报，免得每帧都重画）
+        .onDidScroll((x: number, y: number) => {
+          AppStorage.setOrCreate<boolean>('wb_scrolling', true);
+          this.lastScrollY = y;
+          AppStorage.setOrCreate<number>('wb_scroll_y', y);
+        })
         .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
       }
       .onRefreshing(() => { this.doRefresh(); })

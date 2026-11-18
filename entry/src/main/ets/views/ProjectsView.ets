@@ -1,8 +1,8 @@
-// 项目进度
+// 我的项目
 // 对齐「个人工作台」ProjectsApp.tsx：page-head → 项目卡列表（色点 + 名称 + 完成度条 + 备注
 // + 展开看任务 / 最近记下的）→ 新建项目走 sheet（名字 + 颜色 + 目标日）。
 import { Store } from '../store/Store';
-import { areaLabel, C, onFill, S, tc, tk, tkInk } from '../utils/Theme';
+import { S, areaLabel, brandGradient, misc, onFill, paletteList, tc, tk, tkInk } from '../utils/Theme';
 import { D } from '../utils/DateUtil';
 import { Card } from '../components/Card';
 import { sym } from '../components/Icon';
@@ -28,10 +28,14 @@ interface AreaChoice {
 @Component
 export struct ProjectsView {
   // v4.8：深色模式（变了要重画本组件）
-  @StorageLink('wb_dark') dark: boolean = false;
+  @StorageLink('wb_pal') pal: number = 0;
   @State tick: number = 0;
   // v4.6：宽屏档位（宽屏时弹层限宽）
   @StorageLink('wb_layout') layoutMode: number = 0;
+  // v5.17：宽屏列数（>1180vp 三列 / >820vp 两列 / 更窄一列）。
+  //   R.cols() 读的是 AppStorage，改窗口大小时不会自己触发本页重画 ⇒ 这里挂一个 @StorageLink，
+  //   窗口宽度一变（旋转、分屏、拖窗口）本页就会重画，栅格列数跟着变。
+  @StorageLink('wb_cols') cols: number = 1;
   @State tasks: Task[] = [];
   // v4.5：ArkUI V1 只刷新「表达式里直接读过 state」的节点 ⇒ 计数进 @State
   @State kUnassigned: number = 0;
@@ -73,6 +77,8 @@ export struct ProjectsView {
   @State editId: number = -1;
   @State showArchived: boolean = false;
   onNavigate: (page: string) => void = () => {};
+  // v5.17：二级页返回（Index 传进来的）
+  onBack: () => void = () => {};
   @State newName: string = '';
   @State newColor: string = '#9B8AE6';
   @State newNote: string = '';
@@ -83,13 +89,16 @@ export struct ProjectsView {
   @State newErr: string = '';
   private unsub: () => void = () => {};
   // 新建/编辑项目时的领域胶囊
-  private areaChoices: AreaChoice[] = [
-    { key: 'work', label: '工作', color: '#1A6499' },
-    { key: 'side', label: '副业', color: '#6650C8' },
-    { key: 'media', label: '内容', color: '#A54A7A' },
-    { key: 'study', label: '学习', color: '#0F6E58' },
-    { key: 'life', label: '生活', color: '#8A5A0F' }
-  ];
+  /** v5.7：领域色跟着配色方案走 */
+  private areaChoices(pal: number): AreaChoice[] {
+    return [
+      { key: 'work', label: '工作', color: tk(pal, 'work') },
+      { key: 'side', label: '副业', color: tk(pal, 'side') },
+      { key: 'media', label: '内容', color: tk(pal, 'media') },
+      { key: 'study', label: '学习', color: tk(pal, 'study') },
+      { key: 'life', label: '生活', color: tk(pal, 'life') }
+    ];
+  }
 
   private recalc(): void {
     this.kUnassigned = this.unassignedCount();
@@ -100,6 +109,26 @@ export struct ProjectsView {
     return this.layoutMode >= 1;
   }
 
+  /**
+   * v5.17 宽屏两栏：栅格总列数。
+   * 断点跟网页端 .home-grid 一致（>1180px 三列 / ≤1180px 两列 / ≤820px 一列），
+   * App 这边的数值就是 R.update 写进 AppStorage 的 'wb_cols'。
+   */
+  private gridCols(): number {
+    return this.cols;
+  }
+
+  /**
+   * v5.17 宽屏两栏：某个块占几列（同 HomeView 的写法）。
+   * 权重 3 = 整行，权重 2 = 两列，权重 1 = 一列；手机上永远一列。
+   */
+  private spanFor(weight: number): number {
+    const c: number = this.cols;
+    if (weight >= 3 && c >= 2) { return c; }
+    if (weight >= 2 && c >= 3) { return 2; }
+    return 1;
+  }
+
   private syncStore(): void {
     this.tasks = Store.I.tasks;
     this.notes = Store.I.notes;
@@ -107,9 +136,10 @@ export struct ProjectsView {
     this.recalc();
   }
 
-  private readonly palette: string[] = [
-    '#1A6499', '#6650C8', '#A54A1E', '#14765F', '#8A5A0F', '#12706B', '#6F5FC4', '#A54A7A'
-  ];
+  /** v5.7：项目配色盘跟着配色方案走 */
+  private projectPalette(pal: number): string[] {
+    return paletteList(pal, 'project8');
+  }
 
   aboutToAppear(): void {
     this.syncStore();
@@ -156,7 +186,7 @@ export struct ProjectsView {
     // v4.21：这三个色直接当白卡上的字色用，按 >=4.55:1 重算
     if (p.target_date === null || p.target_date.length < 10) { return '#52697E'; }
     const days: number = D.diffDays(D.parse(p.target_date), new Date());
-    if (days < 0) { return '#A64B2E'; }
+    if (days < 0) { return '#A83440'; }
     if (days <= 3) { return '#885E20'; }
     return '#52697E';
   }
@@ -282,42 +312,44 @@ export struct ProjectsView {
     }
   }
 
-  // 三个并排小按钮（对齐 .pj-acts button：flex 1、居中、gap 4、高 27、radius 9、白底描边）
+  // 三个并排小按钮（对齐 .pj-acts button：flex 1、居中、gap 4、radius 9、白底描边）
+  // v5.15 可访问性：原来高 27 ⇒ 撑到 40
   @Builder pjAct(icon: string, label: string, danger: boolean, cb: () => void) {
-    Row({ space: 4 }) {
+    Row({  space: S.spaceSm  }) {
       SymbolGlyph(sym(icon))
-        .fontSize(14)
-        .fontColor([danger ? tc(this.dark, '#B06A5C', 1) : tc(this.dark, '#7C8F9F', 1)])
-      Text(label).fontSize(10).fontColor(danger ? tc(this.dark, '#B06A5C', 1) : tc(this.dark, '#7C8F9F', 1))
+        .fontSize(S.cardTitleSize)
+        .fontColor([danger ? tc(this.pal, '#B06A5C', 1) : tc(this.pal, '#7C8F9F', 1)])
+      Text(label).fontSize(S.subSize).fontColor(danger ? tc(this.pal, '#B06A5C', 1) : tc(this.pal, '#7C8F9F', 1))
     }
     .layoutWeight(1)
-    .height(27)
+    .height(40)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
-    .borderRadius(9)
-    .backgroundColor(tc(this.dark, '#FFFFFF', 0))
-    .border({ width: 1, color: tk(this.dark, 'line') })
+    .borderRadius(S.radiusSm)
+    .backgroundColor(tc(this.pal, '#FFFFFF', 0))
+    .border({ width: 1, color: tk(this.pal, 'line') })
     .onClick(cb)
+    .accessibilityText(label)
   }
 
   // ── 视图 ──
   @Builder projCard(p: Project) {
-    Column({ space: 9 }) {
+    Column({  space: S.spaceXl  }) {
       // 头部：色点 + 名字 + 百分比
-      Row({ space: 9 }) {
-        Row().width(9).height(9).borderRadius(5).backgroundColor(p.color).flexShrink(0)
-        Column({ space: 2 }) {
+      Row({  space: S.spaceXl  }) {
+        Row().width(9).height(9).borderRadius(S.radiusXs).backgroundColor(p.color).flexShrink(0)
+        Column({  space: S.spaceXs  }) {
           Text(p.name)
-            .fontSize(13).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#2C4257', 1))
+            .fontSize(S.midSize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#2C4257', 1))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-          Row({ space: 0 }) {
+          Row({  space: 0  }) {
             Text(`${areaLabel(p.area)} · ${p.total} 件任务`)
-              .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1))
+              .fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1))
             if (this.weekDone(p) > 0) {
               Text(' · 本周完成 ')
-                .fontSize(9.5).fontColor(tc(this.dark, '#A8B8C6', 1))
+                .fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1))
               Text(`${this.weekDone(p)}`)
-                .fontSize(9.5).fontColor(tc(this.dark, '#17A8A4', 1)).fontWeight(FontWeight.Bold)
+                .fontSize(S.tinySize).fontColor(tc(this.pal, '#17A8A4', 1)).fontWeight(FontWeight.Bold)
             }
           }
           .width('100%')
@@ -325,7 +357,7 @@ export struct ProjectsView {
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
         Text(`${this.pct(p)}%`)
-          .fontSize(12).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#5C7086', 1)).flexShrink(0)
+          .fontSize(S.smallSize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#5C7086', 1)).flexShrink(0)
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
@@ -336,22 +368,22 @@ export struct ProjectsView {
         Row()
           .height('100%')
           .width(`${this.pct(p)}%`)
-          .borderRadius(99)
+          .borderRadius(S.radiusPill)
           .backgroundColor(p.color)
       }
-      .width('100%').height(5).borderRadius(99).backgroundColor(tc(this.dark, '#EEF5FA', 0))
+      .width('100%').height(5).borderRadius(S.radiusPill).backgroundColor(tc(this.pal, '#EEF5FA', 0))
       .alignItems(VerticalAlign.Center)
 
       if (p.note.length > 0) {
-        Text(p.note).fontSize(10).fontColor(tc(this.dark, '#8FA2B3', 1)).width('100%')
+        Text(p.note).fontSize(S.subSize).fontColor(tc(this.pal, '#8FA2B3', 1)).width('100%')
       }
 
       if (this.dueText(p).length > 0) {
-        Row({ space: 5 }) {
-          Text('目标日').fontSize(9).fontColor(tc(this.dark, '#A8B8C6', 1))
-          Text(p.target_date !== null ? D.slashMd(D.parse(p.target_date)) : '')
-            .fontSize(9).fontColor(tc(this.dark, '#B6C8D6', 1))
-          Text(this.dueText(p)).fontSize(10).fontColor(this.dueTone(p)).fontWeight(FontWeight.Medium)
+        Row({  space: S.spaceMd  }) {
+          Text('目标日').fontSize(S.tinySize).fontColor(tc(this.pal, '#A8B8C6', 1))
+          Text(p.target_date !== null ? D.md(p.target_date) : '')
+            .fontSize(S.tinySize).fontColor(tc(this.pal, '#B6C8D6', 1))
+          Text(this.dueText(p)).fontSize(S.subSize).fontColor(this.dueTone(p)).fontWeight(FontWeight.Medium)
           Blank()
         }
         .width('100%')
@@ -359,7 +391,7 @@ export struct ProjectsView {
       }
 
       // 三个并排按钮（对齐工作台 .pj-acts：编辑 / 归档 / 删除）
-      Row({ space: 5 }) {
+      Row({  space: S.spaceMd  }) {
         // v4.4：第一个按钮恒为「编辑」—— 以前归档项目两个按钮都写「恢复」，
         // 而且归档后就再也编辑不了了。
         this.pjAct('pen', '编辑', false, () => { this.startEdit(p); })
@@ -367,42 +399,54 @@ export struct ProjectsView {
         this.pjAct('trash', '删除', true, () => { this.remove(p); })
       }
       .width('100%')
-      .margin({ top: 1 })
+      .margin({  top: S.spaceXs  })
 
       // 展开：任务 + 灵感
       if (this.openId === p.id) {
-        Column({ space: 6 }) {
+        Column({  space: S.spaceMd  }) {
           Divider().color('#EAF2F9').strokeWidth(1)
 
           if (this.tasksOf(p).length === 0) {
             Text('这个项目还没有任务。去任务面板把任务归到它下面。')
-              .fontSize(10).fontColor(tc(this.dark, '#B6C8D6', 1)).width('100%')
+              .fontSize(S.subSize).fontColor(tc(this.pal, '#B6C8D6', 1)).width('100%')
           } else {
             ForEach(this.tasksOf(p), (t: Task) => {
-              Row({ space: 7 }) {
+              Row({  space: S.spaceLg  }) {
+                // v5.15 可访问性：勾选框原来只有 16×16 ⇒ 外层套 40×40 的透明热区，勾选框本身不变
                 Row() {
-                  if (t.status === 'done') {
-                    // v4.23：fs14 的勾盒子 14x14vp，圆放大到 16vp 才装得下
-                    SymbolGlyph(sym('check')).fontSize(14).fontColor([tkInk(this.dark, 'study')])
+                  Row() {
+                    if (t.status === 'done') {
+                      // v4.23：fs14 的勾盒子 14x14vp，圆放大到 16vp 才装得下
+                      SymbolGlyph(sym('check')).fontSize(S.cardTitleSize).fontColor([tkInk(this.pal, 'study')])
+                    }
                   }
+                  .width(16).height(16).borderRadius(S.radiusSm)
+                  .backgroundColor(t.status === 'done' ? tk(this.pal, 'brandSoft') : tk(this.pal, 'card'))
+                  .border({ width: 1.5, color: t.status === 'done' ? tk(this.pal, 'study') : tc(this.pal, '#DDE9F3', 2) })
+                  .justifyContent(FlexAlign.Center)
+                  .alignItems(VerticalAlign.Center)
                 }
-                .width(16).height(16).borderRadius(8)
-                .backgroundColor(t.status === 'done' ? tk(this.dark, 'brandSoft') : tk(this.dark, 'card'))
-                .border({ width: 1.5, color: t.status === 'done' ? tk(this.dark, 'study') : tc(this.dark, '#DDE9F3', 2) })
-                .justifyContent(FlexAlign.Center)
-                .alignItems(VerticalAlign.Center)
+                .width(40).height(40)
+                .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
                 .flexShrink(0)
-                .onClick(() => { Store.I.toggleTask(t.id).catch(() => {}); })
+                // v5.14：以前 `.catch(() => {})` 是死代码（Store 自己吞掉了异常），
+                //   改成失败会静默。现在按返回值提示。
+                .onClick(() => {
+                  Store.I.toggleTask(t.id).then((ok: boolean) => {
+                    if (!ok) { toast(this.getUIContext(), '状态没改成，再试一次'); }
+                  });
+                })
+                .accessibilityText(t.status === 'done' ? `把任务 ${t.title} 改回待办` : `把任务 ${t.title} 标记为已完成`)
 
                 Text(t.title)
-                  .fontSize(10.5)
-                  .fontColor(t.status === 'done' ? tc(this.dark, '#A8B8C6', 1) : tc(this.dark, '#4E6579', 1))
+                  .fontSize(S.subSize)
+                  .fontColor(t.status === 'done' ? tc(this.pal, '#A8B8C6', 1) : tc(this.pal, '#4E6579', 1))
                   .decoration({ type: t.status === 'done' ? TextDecorationType.LineThrough : TextDecorationType.None, color: '#A8B8C6' })
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                   .layoutWeight(1)
                 if (t.due_date !== null) {
-                  Text(D.slashMd(D.parse(t.due_date))).fontSize(9).fontColor(tc(this.dark, '#B6C8D6', 1)).flexShrink(0)
+                  Text(D.md(t.due_date)).fontSize(S.tinySize).fontColor(tc(this.pal, '#B6C8D6', 1)).flexShrink(0)
                 }
               }
               .width('100%')
@@ -411,99 +455,114 @@ export struct ProjectsView {
           }
 
           if (this.notesOf(p).length > 0) {
-            Column({ space: 3 }) {
-              Text('最近记下的').fontSize(10).fontColor(tc(this.dark, '#A8B8C6', 1)).fontWeight(FontWeight.Medium).width('100%')
+            Column({  space: S.spaceSm  }) {
+              Text('最近记下的').fontSize(S.subSize).fontColor(tc(this.pal, '#A8B8C6', 1)).fontWeight(FontWeight.Medium).width('100%')
               ForEach(this.notesOf(p), (n: Note) => {
                 Row() {
                   Text(n.title.length > 0 ? n.title : '(无标题)')
-                    .fontSize(11).fontColor(tc(this.dark, '#4E6C86', 1))
+                    .fontSize(S.labelSize).fontColor(tc(this.pal, '#4E6C86', 1))
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-                  Text(D.short(D.dateOf(n.updated_at))).fontSize(9).fontColor(tc(this.dark, '#B6C8D6', 1)).flexShrink(0)
+                  Text(D.md(D.dateOf(n.updated_at))).fontSize(S.tinySize).fontColor(tc(this.pal, '#B6C8D6', 1)).flexShrink(0)
                 }
                 .width('100%')
               }, (n: Note) => `pn-${n.id}-${this.tick}`)
             }
             .width('100%')
-            .margin({ top: 2 })
+            .margin({  top: S.spaceXs  })
           }
 
+          // v5.15 可访问性：「收起」原来只有 ~21 高 ⇒ 撑到 40
           Text('收起')
-            .fontSize(9.5).fontColor(tc(this.dark, '#7C8F9F', 1)).width('100%').textAlign(TextAlign.Center)
-            .padding({ top: 6, bottom: 6 }).borderRadius(8)
-            .backgroundColor(tk(this.dark, 'card')).border({ width: 1, color: tk(this.dark, 'line') })
+            .fontSize(S.tinySize).fontColor(tc(this.pal, '#7C8F9F', 1)).width('100%').textAlign(TextAlign.Center)
+            .height(40)
+            .borderRadius(S.radiusSm)
+            .backgroundColor(tk(this.pal, 'card')).border({ width: 1, color: tk(this.pal, 'line') })
             .onClick(() => { this.openId = -1; })
+            .accessibilityText('收起这个项目')
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
       }
     }
     .width('100%')
-    .padding({ left: 15, right: 15, top: 14, bottom: 14 })
-    .borderRadius(18)
-    .backgroundColor(tk(this.dark, 'card'))
-    .border({ width: 1, color: this.openId === p.id ? tk(this.dark, 'brandLine') : tk(this.dark, 'cardBorder') })
+    .padding({  left: 15, right: 15, top: S.space3Xl, bottom: S.space3Xl  })
+    .borderRadius(S.radiusCard)
+    .backgroundColor(tk(this.pal, 'card'))
+    .border({ width: 1, color: this.openId === p.id ? tk(this.pal, 'brandLine') : tk(this.pal, 'cardBorder') })
     .shadow(cardShadow2())
-    .margin({ bottom: 12 })
+    .margin({  bottom: S.space2Xl  })
     .alignItems(HorizontalAlign.Start)
   }
 
   @Builder newSheetBody() {
     Column() {
       Scroll() {
-        Column({ space: 11 }) {
+        Column({  space: S.space2Xl  }) {
           SheetHead({ title: this.editId > 0 ? '编辑项目' : '新建项目', sub: this.editId > 0 ? '改完直接保存。' : '起个名字，颜色随便挑一个。' })
 
           FormBox({ label: '项目名' }) {
             TextInput({ placeholder: '比如：个人网站改版', text: this.newName })
-              .fontSize(12).height(36)
+              .fontSize(S.smallSize).height(36)
               .placeholderFont({ size: 12 })
-              .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-              .fontColor(tk(this.dark, 'text'))
-              .caretColor(tk(this.dark, 'brand'))
-              .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-              .border({ width: 1, color: tk(this.dark, 'line') })
-              .padding({ left: 11, right: 11 })
+              .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+              .fontColor(tk(this.pal, 'text'))
+              .caretColor(tk(this.pal, 'brand'))
+              .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+              .border({ width: 1, color: tk(this.pal, 'line') })
+              .padding({  left: S.space2Xl, right: S.space2Xl  })
               .onChange((v: string) => { this.newName = v; })
           }
 
           FormBox({ label: '一句话说明' }) {
             TextArea({ placeholder: '可选', text: this.newNote })
-              .fontSize(12)
+              .fontSize(S.smallSize)
               .placeholderFont({ size: 12 })
-              .placeholderColor(tc(this.dark, '#A8B8C6', 1))
-              .fontColor(tk(this.dark, 'text'))
-              .caretColor(tk(this.dark, 'brand'))
+              .placeholderColor(tc(this.pal, '#A8B8C6', 1))
+              .fontColor(tk(this.pal, 'text'))
+              .caretColor(tk(this.pal, 'brand'))
               .constraintSize({ minHeight: 62 })
-              .backgroundColor(tc(this.dark, '#F8FBFE', 0)).borderRadius(11)
-              .border({ width: 1, color: tk(this.dark, 'line') })
+              .backgroundColor(tc(this.pal, '#F8FBFE', 0)).borderRadius(S.radiusBtn)
+              .border({ width: 1, color: tk(this.pal, 'line') })
               .padding(10)
               .onChange((v: string) => { this.newNote = v; })
           }
 
           FormBox({ label: '属于哪一块' }) {
-            Row({ space: 8 }) {
-              ForEach(this.areaChoices, (a: AreaChoice) => {
-                Text(a.label)
-                  .fontSize(11)
-                  .fontColor(this.newArea === a.key ? onFill(this.dark) : tc(this.dark, '#5E7183', 1))
-                  .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-                  .borderRadius(999)
-                  .backgroundColor(this.newArea === a.key ? a.color : tc(this.dark, '#F4F9FE', 0))
-                  .onClick(() => { this.newArea = a.key; })
-              }, (a: AreaChoice) => `pa-${a.key}`)
+            Row({  space: S.spaceLg  }) {
+              ForEach(this.areaChoices(this.pal), (a: AreaChoice) => {
+                // v5.15 可访问性：胶囊原来只有 ~23 高 ⇒ 外层套 40 高的透明热区，胶囊本身不变
+                Row() {
+                  Text(a.label)
+                    .fontSize(S.labelSize)
+                    .fontColor(this.newArea === a.key ? onFill(this.pal) : tc(this.pal, '#5E7183', 1))
+                    .padding({  left: S.space2Xl, right: S.space2Xl, top: S.spaceMd, bottom: S.spaceMd  })
+                    .borderRadius(S.radiusPill)
+                    .backgroundColor(this.newArea === a.key ? a.color : tc(this.pal, '#F4F9FE', 0))
+                }
+                .height(40)
+                .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
+                .onClick(() => { this.newArea = a.key; })
+                .accessibilityText(`选 ${a.label}`)
+              }, (a: AreaChoice) => `pa-${a.key}-${this.pal}`)
             }
             .width('100%')
           }
 
           FormBox({ label: '颜色' }) {
-            Row({ space: 8 }) {
-              ForEach(this.palette, (c: string) => {
-                Row()
-                  .width(26).height(26).borderRadius(13)
-                  .backgroundColor(c)
-                  .border({ width: 2, color: this.newColor === c ? (this.dark ? '#E8EFF7' : '#2C4257') : '#00000000' })
-                  .onClick(() => { this.newColor = c; })
-              }, (c: string) => `pc-${c}`)
+            Row({  space: S.spaceLg  }) {
+              ForEach(this.projectPalette(this.pal), (c: string, i: number) => {
+                // v5.15 可访问性：色块原来只有 26×26 ⇒ 外层套 40×40 的透明热区，色块本身不变
+                Row() {
+                  Row()
+                    .width(26).height(26).borderRadius(S.radiusInner)
+                    .backgroundColor(c)
+                    .border({ width: 2, color: this.newColor === c ? '#2C4257' : '#00000000' })
+                }
+                .width(40).height(40)
+                .justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Center)
+                .onClick(() => { this.newColor = c; })
+                .accessibilityText(`选第 ${i + 1} 个颜色`)
+              }, (c: string) => `pc-${c}-${this.pal}`)
             }
             .width('100%')
           }
@@ -529,9 +588,12 @@ export struct ProjectsView {
           FormErr({ msg: this.newErr })
         }
         .width('100%')
-        .padding({ left: 18, right: 18, top: 18 })
+        .padding({  left: S.space5Xl, right: S.space5Xl, top: S.space5Xl  })
         .alignItems(HorizontalAlign.Start)
       }
+        // v5.16：滚动时把右下角悬浮按钮藏起来（它正好压在内容上），停了就回来
+        .onDidScroll((x: number, y: number) => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+        .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
       .onScrollEdge(onEdgeScrolled)
       .onWillScroll(onEdgeWillScroll)
       .edgeEffect(EdgeEffect.Spring)
@@ -548,8 +610,8 @@ export struct ProjectsView {
       })
     }
     .width('100%')
-    .backgroundColor(tk(this.dark, 'card'))
-    .borderRadius(22)
+    .backgroundColor(tk(this.pal, 'card'))
+    .borderRadius(S.radiusSheet)
   }
 
 
@@ -564,6 +626,8 @@ export struct ProjectsView {
 
   @Builder pageTop() {
     TopBar({
+      backLabel: '返回',
+      onBack: () => { this.onBack(); },
       primaryText: '新建项目',
       onPrimary: () => { this.startNew(); },
       onSearch: () => { this.onNavigate('search'); },
@@ -577,79 +641,115 @@ export struct ProjectsView {
 
       Scroll() {
         Column() {
-          Text(`${this.tick}`).fontSize(1).width(1).height(1).opacity(0)
+          Text(`${this.tick}`).fontSize(S.hiddenSize).width(1).height(1).opacity(0)
 
           this.pageTop()
 
           // page-head
-          Row({ space: 10 }) {
-            Column({ space: 5 }) {
-              Text('PROJECTS · 项目进度').fontSize(9).fontColor(tc(this.dark, '#9DB0C1', 1)).letterSpacing(1.6)
+          Row({  space: S.spaceXl  }) {
+            Column({  space: S.spaceMd  }) {
+              Text('PROJECTS · 我的项目').fontSize(S.tinySize).fontColor(tc(this.pal, '#9DB0C1', 1)).letterSpacing(1.6)
               Text('手上的事，分成几摊。')
-                .fontSize(23).fontWeight(FontWeight.Bold).fontColor(tk(this.dark, 'text')).letterSpacing(-0.5)
-              Text('每个项目一个进度条，做久了能看出哪摊在推进、哪摊在拖。')
-                .fontSize(11).fontColor(tk(this.dark, 'textSub'))
+                .fontSize(S.sectionSize).fontWeight(FontWeight.Bold).fontColor(tk(this.pal, 'text')).letterSpacing(-0.2)
+              Text('一个项目一条进度，看得出哪摊在推进。')
+                .fontSize(S.labelSize).fontColor(tk(this.pal, 'textSub'))
             }
             .layoutWeight(1)
             .alignItems(HorizontalAlign.Start)
           }
           .width('100%')
           .alignItems(VerticalAlign.Bottom)
-          .padding({ top: 14, bottom: 14 })
+          .padding({  top: S.spaceXl, bottom: S.spaceXl  })
 
           if (this.activeProjects().length === 0 && this.archivedProjects().length === 0) {
-            Column({ space: 7 }) {
-              SymbolGlyph(sym('target')).fontSize(28).fontColor([tc(this.dark, '#C7D8E4', 1)])
-              Text('还没有项目').fontSize(14).fontWeight(FontWeight.Medium).fontColor(tc(this.dark, '#5C7086', 1))
+            Column({  space: S.spaceLg  }) {
+              SymbolGlyph(sym('target')).fontSize(28).fontColor([tc(this.pal, '#C7D8E4', 1)])
+              Text('还没有项目').fontSize(S.cardTitleSize).fontWeight(FontWeight.Medium).fontColor(tc(this.pal, '#5C7086', 1))
               Text('把相关的任务归到一个项目里，比如「小记 v1 上线」「11 月副业」。')
-                .fontSize(11).fontColor(tc(this.dark, '#A8B8C6', 1))
+                .fontSize(S.labelSize).fontColor(tc(this.pal, '#A8B8C6', 1))
                 .textAlign(TextAlign.Center)
               Text('点右上角「新建项目」开始。')
-                .fontSize(11).fontColor(tc(this.dark, '#A8B8C6', 1))
+                .fontSize(S.labelSize).fontColor(tc(this.pal, '#A8B8C6', 1))
                 .textAlign(TextAlign.Center)
+              // v5.15 可访问性：「新建第一个项目」原来只有 ~27 高 ⇒ 撑到 40
               Text('新建第一个项目')
-                .fontSize(11).fontColor(onFill(this.dark))
-                .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+                .fontSize(S.labelSize).fontColor(onFill(this.pal))
+                .height(40)
+                .padding({  left: S.space4Xl, right: S.space4Xl  })
                 .borderRadius(S.radiusBtn)
-                .linearGradient({ angle: 140, colors: [['#1C7C74', 0], ['#1B7799', 1]] })
-                .margin({ top: 4 })
+                .textAlign(TextAlign.Center)
+                .linearGradient(brandGradient(this.pal))
+                .margin({  top: S.spaceSm  })
                 .onClick(() => { this.startNew(); })
+                .accessibilityText('新建第一个项目')
             }
             .width('100%')
-            .padding({ top: 34, bottom: 34 })
+            .padding({  top: 34, bottom: 34  })
             .borderRadius(S.radiusCard)
-            .border({ width: 1, color: tc(this.dark, tc(this.dark, '#DDE9F3', 2), 2), style: BorderStyle.Dashed })
-            .backgroundColor(this.dark ? 'rgba(24,34,46,0.6)' : 'rgba(255,255,255,0.6)')
+            .border({ width: 1, color: tc(this.pal, tc(this.pal, '#DDE9F3', 2), 2), style: BorderStyle.Dashed })
+            .backgroundColor('rgba(255,255,255,0.6)')
             .alignItems(HorizontalAlign.Center)
           } else {
-            ForEach(this.activeProjects(), (p: Project) => {
-              this.projCard(p)
-            }, (p: Project) => `pj-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}-${this.tick}`)
+            if (this.gridCols() >= 2) {
+              // v5.17 宽屏：项目卡片铺 2~3 列（手机走下面的单列分支，排版跟以前一样）。
+              GridRow({ columns: this.gridCols(), gutter: { x: S.gapLg, y: 0 } }) {
+                ForEach(this.activeProjects(), (p: Project) => {
+                  GridCol({ span: this.spanFor(1) }) {
+                    Column() {
+                      this.projCard(p)
+                    }
+                    .width('100%')
+                  }
+                }, (p: Project) => `pj-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}-${this.tick}`)
+              }
+              .width('100%')
+            } else {
+              ForEach(this.activeProjects(), (p: Project) => {
+                this.projCard(p)
+              }, (p: Project) => `pj-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}-${this.tick}`)
+            }
 
             if (this.archivedProjects().length > 0) {
               Text('已归档')
-                .fontSize(10.5).fontColor(tc(this.dark, '#A8B8C6', 1)).fontWeight(FontWeight.Medium)
+                .fontSize(S.subSize).fontColor(tc(this.pal, '#A8B8C6', 1)).fontWeight(FontWeight.Medium)
                 .letterSpacing(0.4)
                 .width('100%')
-                .margin({ top: 8, bottom: 4 })
-              ForEach(this.archivedProjects(), (p: Project) => {
-                this.projCard(p)
-              }, (p: Project) => `pja-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}`)
+                .margin({  top: S.spaceLg, bottom: S.spaceSm  })
+              if (this.gridCols() >= 2) {
+                GridRow({ columns: this.gridCols(), gutter: { x: S.gapLg, y: 0 } }) {
+                  ForEach(this.archivedProjects(), (p: Project) => {
+                    GridCol({ span: this.spanFor(1) }) {
+                      Column() {
+                        this.projCard(p)
+                      }
+                      .width('100%')
+                    }
+                  }, (p: Project) => `pja-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}`)
+                }
+                .width('100%')
+              } else {
+                ForEach(this.archivedProjects(), (p: Project) => {
+                  this.projCard(p)
+                }, (p: Project) => `pja-${p.id}-${p.done}-${p.total}-${this.openId}-${p.status}`)
+              }
             }
           }
 
           if (this.projects.length > 0 && this.unassignedCount() > 0) {
             Text(`还有 ${this.kUnassigned} 件任务没归到项目里。在任务面板编辑任务时选一下项目就行。`)
-              .fontSize(10.5)
-              .fontColor(tc(this.dark, '#A8B8C6', 1))
+              .fontSize(S.subSize)
+              .fontColor(tc(this.pal, '#A8B8C6', 1))
               .width('100%')
-              .margin({ top: 6, bottom: S.pageBottom })
+              .margin({  top: S.spaceMd, bottom: R.bottomPad()  })
           }
         }
         .width('100%')
-        .padding({ left: S.pagePad, right: S.pagePad, top: S.pageTop })
+        .padding({  left: S.pagePad, right: S.pagePad, top: S.pageTop  })
         .alignItems(HorizontalAlign.Start)
       }
+        // v5.16：滚动时把右下角悬浮按钮藏起来（它正好压在内容上），停了就回来
+        .onDidScroll((x: number, y: number) => { AppStorage.setOrCreate<boolean>('wb_scrolling', true); })
+        .onScrollStop(() => { AppStorage.setOrCreate<boolean>('wb_scrolling', false); })
       .onScrollEdge(onEdgeScrolled)
       .onWillScroll(onEdgeWillScroll)
       .align(Alignment.TopStart)
@@ -657,7 +757,8 @@ export struct ProjectsView {
       .height('100%')
       .scrollBar(BarState.Off)
       .constraintSize({ maxWidth: 1240 })
-      .backgroundColor(tk(this.dark, 'bg'))
+      // v5.0：页面底色改成透明，让 Index 根 Stack 上的大光斑透出来
+      .backgroundColor(Color.Transparent)
       .edgeEffect(EdgeEffect.Spring)
       .bindSheet($$this.showNew, this.newSheet(), {
         // v4.26：宽屏时给「窗口高度」这个绝对值，别写 '100%'

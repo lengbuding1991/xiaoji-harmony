@@ -15,11 +15,11 @@
 import { display } from '@kit.ArkUI';
 
 export class Layout {
-  /** 手机竖屏 / 折叠屏外屏（<600vp）：底部导航 + 单列 */
+  /** 手机竖屏 / 折叠屏外屏（<640vp）：底部导航 + 单列 */
   static readonly Compact: number = 0;
-  /** 折叠屏展开 / 平板竖屏（600–899vp）：左侧窄导航 + 单列 */
+  /** 折叠屏展开 / 平板竖屏（640–980vp）：左侧图标导航 + 单到双列 */
   static readonly Medium: number = 1;
-  /** 平板横屏 / 大折叠屏（≥900vp）：左侧导航 + 多列网格（照网页端列数） */
+  /** 平板横屏 / 大折叠屏（>980vp）：左侧带文字导航 + 多列网格（照网页端列数） */
   static readonly Expanded: number = 2;
 }
 
@@ -55,12 +55,6 @@ export class R {
     return v === undefined ? 0 : v;
   }
 
-  /** 内容区宽度（vp） */
-  static contentW(): number {
-    const v: number | undefined = AppStorage.get<number>(R.KEY_CW);
-    return v === undefined ? 0 : v;
-  }
-
   /**
    * 当前**窗口**高度（vp）。
    * 取不到（还没量到）就退回屏幕高度，至少不会算出 0 把弹层压扁。
@@ -82,36 +76,6 @@ export class R {
     return R.mode() >= Layout.Medium;
   }
 
-  /** 大屏（≥900vp）：可以按网页端的列数排多列 */
-  static big(): boolean {
-    return R.mode() >= Layout.Expanded;
-  }
-
-  /** 每一块占多宽（百分比字符串），直接给 .width() 用 */
-  static colW(): string {
-    const n: number = R.cols();
-    if (n <= 1) { return '100%'; }
-    if (n === 2) { return '48.4%'; }
-    return '31.6%';
-  }
-
-  /** 首页大板块的宽度（照网页端 .home-grid 的 .span2 / .span1）
-   *  · 3 列时：占 2 列的占 67.5%，占 1 列的占 31.5%（留 1% 当列间距）
-   *  · 2 列时：占 2 列的占满整行，占 1 列的占一半
-   *  · 1 列时：都占满
-   */
-  static span2(): string {
-    if (R.cols() >= 3) { return '67.5%'; }
-    return '100%';
-  }
-
-  static span1(): string {
-    const n: number = R.cols();
-    if (n >= 3) { return '31.5%'; }
-    if (n === 2) { return '48.4%'; }
-    return '100%';
-  }
-
   /**
    * 左侧导航栏宽度（vp）：网页端是 236px，这里按屏幕比例收一点。
    *
@@ -121,19 +85,30 @@ export class R {
    *   内容区只剩 704vp，首页被挤成窄列、卡片之间出现大片空白（用户在平板竖屏下报的）。
    */
   static railW(): number {
-    if (R.railCompact()) {
-      return 70;
+    if (!R.wide()) {
+      return 0;
     }
-    return R.big() ? 224 : 168;
+    // v5.17：照网页端 @media(max-width:980px){.side{width:70px}}。
+    //   以前这里是「70 / 224 / 168」三档，而且 168 档给了 600–899vp ——
+    //   结果窗口越宽侧栏反而越窄（900vp 给 70 图标栏，899vp 给 168 带文字栏），断点倒挂。
+    return R.width() > 980 ? 224 : 70;
   }
 
-  /** 窄导航（只留图标）：网页端 980vp 断点，只有大屏档位才会收 */
+  /** 窄导航（只留图标）：网页端 980vp 断点 */
   static railCompact(): boolean {
-    if (R.mode() < Layout.Expanded) {
-      return false;
-    }
     const w: number = R.width();
-    return w > 0 && w < 980;
+    return w > 0 && w <= 980;
+  }
+
+  /**
+   * 页面底部要留多少白（vp）。
+   *
+   * v5.17：以前到处写死 `S.pageBottom`（92vp），那是给手机底部导航留的。
+   *   宽屏（平板 / 折叠屏）走的是左侧导航，**根本没有底部导航**，
+   *   那 92vp 就是白白扔掉的一屏空间 ⇒ 宽屏只留 24vp。
+   */
+  static bottomPad(): number {
+    return R.wide() ? 24 : 92;
   }
 
   /**
@@ -149,22 +124,27 @@ export class R {
       AppStorage.set<number>(R.KEY_WH, h);
     }
     if (Math.abs(w - R.width()) < 1) { return; }
+    // v5.17：断点全部照网页端 app/globals.css 的 @media 改：
+    //   ≤640px  侧栏变底部导航（.side{bottom:0;height:60px}）
+    //   ≤980px  .side{width:70px}（只留图标）
+    //   ≤1180px .home-grid 两列
+    //   ≤820px  .home-grid 一列
+    // 以前用 600 / 900 两档，和网页端对不上，出来「平板竖屏反而比大屏窄」。
     let m: number = Layout.Compact;
-    if (w >= 900) {
+    if (w > 980) {
       m = Layout.Expanded;
-    } else if (w >= 600) {
+    } else if (w >= 640) {
       m = Layout.Medium;
     }
     // 内容区宽度：宽屏要扣掉左侧导航栏和左右内边距
-    // v4.26：980vp 以下（平板竖屏）导航收成 70vp 图标栏，照网页端 @media(max-width:980px)
-    const rail: number = m >= Layout.Medium ? (m >= Layout.Expanded ? (w < 980 ? 70 : 224) : 168) : 0;
+    const rail: number = m >= Layout.Medium ? (w > 980 ? 224 : 70) : 0;
     const pad: number = m >= Layout.Medium ? 32 : 0;
     const cw: number = w - rail - pad;
-    // 列数：照网页端 .home-grid 的思路，一列至少 620vp、三列要 1120vp
+    // 列数：照网页端 .home-grid（按视口宽，不是内容区宽）
     let cols: number = 1;
-    if (cw >= 1120) {
+    if (w > 1180) {
       cols = 3;
-    } else if (cw >= 620) {
+    } else if (w > 820) {
       cols = 2;
     }
     AppStorage.setOrCreate<number>(R.KEY_W, w);
